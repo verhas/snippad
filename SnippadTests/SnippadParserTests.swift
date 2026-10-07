@@ -99,8 +99,7 @@ final class SnippadParserTests: XCTestCase {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("example.snippad")
-        let snippets = try parse(String(contentsOf: url, encoding: .utf8))
-        XCTAssertEqual(snippets.map(\.name), ["Email", "Greeting", "Signature", "Regex: date"])
-        XCTAssertEqual(snippets[3].value, #"\d{4}-\d{2}-\d{2}"#)
+        // Only that it parses: the sample is meant to be edited.
+        XCTAssertFalse(try parse(String(contentsOf: url, encoding: .utf8)).isEmpty)
     }
 }
