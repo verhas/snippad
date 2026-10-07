@@ -1,0 +1,10 @@
+# Each [[snippet]] becomes a button. Click it to copy the value.
+
+[[snippet]]
+name = "apple-ID"
+value = "peter@verhas.com"
+
+[[snippet]]
+name = "team-id"
+value = "QG9YK2GAF4"
+
