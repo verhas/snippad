@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Merged with the Info.plist Xcode generates (GENERATE_INFOPLIST_FILE).
+     Only what has no INFOPLIST_KEY_ build setting lives here: the .snippad
+     file type and Snippad's claim to open it. Kept outside the Snippad
+     folder, because the synchronized group would otherwise also copy it into
+     Resources. -->
+<dict>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>dev.verhas.snippad</string>
+			<key>UTTypeDescription</key>
+			<string>Snippad Snippets</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>snippad</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Snippad Snippets</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>dev.verhas.snippad</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

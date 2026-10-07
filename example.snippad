@@ -1,0 +1,19 @@
+# Each [[snippet]] becomes a button. Click it to copy the value.
+
+[[snippet]]
+name = "Email"
+value = "you@example.com"
+
+[[snippet]]
+name = "Greeting"
+value = "Hello,\n\nthanks for reaching out."
+
+[[snippet]]
+name = "Signature"
+value = """
+Best regards,
+Your Name"""
+
+[[snippet]]
+name = 'Regex: date'
+value = '\d{4}-\d{2}-\d{2}'

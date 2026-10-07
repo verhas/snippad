@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Unsandboxed, like Diptych: the app only reads the .snippad files the
+	     user opens and writes the pasteboard, neither of which needs the
+	     sandbox's per-file grants. It rules out the Mac App Store but
+	     nothing else. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>
