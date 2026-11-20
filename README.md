@@ -1,18 +1,19 @@
 # Snippad
 
-*A pad of snippets: one button per text you keep typing, one click to copy it.*
+*The Swiss pocket knife of clipboard managers.*
 
-Snippad is a small macOS app that lives in the menu bar.
-It does two things:
+Snippad is a macOS clipboard manager and snippet pad that lives in the menu bar.
+It remembers everything you copy, sorts it into lists, keeps it from being pasted where it does not belong, and gives you your own snippets one click away.
 
-- It remembers what you copy -- text, rich text, images, files -- and gives it back from a menu.
-- It opens `.snippad` files.
-  Each file holds a list of named snippets -- an address, a signature, a greeting, a command line -- and Snippad shows them as a window full of buttons.
-  Click a button and its text is on the clipboard, ready to paste anywhere.
+- **History** of everything copied -- text, rich text, images, files -- searchable down to the EXIF data of photos, in the menu bar (⌃⌘V) and in a picker (⇧⌘V).
+- **Lists** for copies from different applications, each with its own icon, and **Paste Guard** rules saying which applications they may be pasted into -- and whether only into private browser windows.
+- **Snippets** in `.snippad` files: text, rich text, files and images, with passwords, expiry, paste-once, and chains (user name first, then the password).
+- **The Snippad Organizer**, one window to edit it all: a text editor with line commands, find and replace, and export; drag and drop between lists; text and QR codes read from images; lists exported as TOML, XML, JSON or YAML.
+- **MCP** for agents, which can use all of it.
 
-A snippet can also leave the clipboard after a while, leave it after it was pasted once, or hand over to the next snippet once pasted: user name first, then the password.
-
-Agents can use all of it through MCP.
+**Our promise.**
+If another clipboard manager has a feature Snippad lacks, you get your money back in full -- Snippad is free, so that is easy.
+Then [open an issue](https://github.com/verhas/snippad/issues/new) asking for the feature, and we will add it.
 
 ## The clipboard history
 
