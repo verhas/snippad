@@ -1,11 +1,51 @@
 import Foundation
 
-/// One button on the board: what it is labelled and what it copies.
+/// What a snippet's value is.
+enum SnippetKind: String, CaseIterable, Sendable {
+    /// Plain text, edited in Snippad.
+    case text
+    /// Formatted text: the value is RTF.
+    case rich
+    /// A reference to a file: the value is its path; the file goes on the
+    /// clipboard as Finder copies it.
+    case file
+    /// An image: the value is the PNG, base64-encoded.
+    case image
+}
+
+/// One button on the board: what it is labelled and what it copies, and what
+/// happens to the clipboard afterwards.
 struct Snippet: Identifiable, Equatable, Sendable {
     /// Position in the file, so two snippets with the same name stay distinct.
     let id: Int
     let name: String
     let value: String
+    /// Seconds after which the value is taken off the clipboard again, if it
+    /// is still there.
+    var expires: Int? = nil
+    /// Taken off the clipboard as soon as an app has pasted it once.
+    var once: Bool = false
+    /// The name of the snippet put on the clipboard once this one is pasted:
+    /// user name first, then the password.
+    var next: String? = nil
+    /// The value is a password: hidden in the editor, shown as dots in the
+    /// history, concealed from other clipboard managers.
+    var password: Bool = false
+    /// The name of the history list the copied value goes to; nil is the
+    /// default list (Clipboard).
+    var list: String? = nil
+    var kind: SnippetKind = .text
+}
+
+extension Snippet {
+    func with(name: String? = nil, value: String? = nil) -> Snippet {
+        Snippet(id: id, name: name ?? self.name, value: value ?? self.value,
+                expires: expires, once: once, next: next, password: password, list: list, kind: kind)
+    }
+
+    func with(id: Int) -> Snippet {
+        Snippet(id: id, name: name, value: value, expires: expires, once: once, next: next, password: password, list: list, kind: kind)
+    }
 }
 
 struct SnippadParseError: LocalizedError, Equatable {
@@ -19,14 +59,16 @@ struct SnippadParseError: LocalizedError, Equatable {
 }
 
 /// Reads a .snippad file: TOML with one `[[snippet]]` table per button, each
-/// holding a `name` and a `value` string.
+/// holding a `name` and a `value` string, and optionally `expires`, `once`
+/// and `next`.
 ///
 /// Not a general TOML parser -- only the part of TOML these files use: tables,
 /// arrays of tables, comments, and keys whose values are strings in any of the
-/// four TOML spellings (basic, literal, and their multi-line forms). Anything
-/// else is reported with its line number rather than guessed at. Keys inside a
-/// snippet other than `name` and `value`, and tables other than `[[snippet]]`,
-/// are skipped, so a file can carry extra string fields without breaking.
+/// four TOML spellings (basic, literal, and their multi-line forms), decimal
+/// integers, or booleans. Anything else is reported with its line number
+/// rather than guessed at. Other keys inside a snippet, and tables other than
+/// `[[snippet]]`, are skipped, so a file can carry extra fields without
+/// breaking.
 enum SnippadParser {
 
     static func parse(_ text: String) throws -> [Snippet] {
@@ -48,7 +90,7 @@ private struct Reader {
     // MARK: - Document
 
     mutating func parseDocument() throws -> [Snippet] {
-        var tables: [(line: Int, fields: [String: String])] = []
+        var tables: [(line: Int, fields: [String: (line: Int, value: Value)])] = []
         var inSnippet = false
 
         while true {
@@ -82,14 +124,14 @@ private struct Reader {
                 guard peek() == "=" else { throw fail("expected '=' after '\(key)'") }
                 i += 1
                 skipBlanks()
-                let value = try parseString(for: key)
+                let value = try parseValue(for: key)
                 try expectLineEnd()
                 if inSnippet {
                     let last = tables.count - 1
                     guard tables[last].fields[key] == nil else {
                         throw SnippadParseError(line: keyLine, message: "'\(key)' is set twice in this snippet")
                     }
-                    tables[last].fields[key] = value
+                    tables[last].fields[key] = (keyLine, value)
                 }
             }
         }
@@ -97,15 +139,64 @@ private struct Reader {
         guard !tables.isEmpty else {
             throw SnippadParseError(line: 0, message: "The file has no [[snippet]] sections.")
         }
-        return try tables.enumerated().map { index, table in
-            guard let name = table.fields["name"] else {
+        let snippets = try tables.enumerated().map { index, table in
+            let fields = table.fields
+            func string(_ key: String) throws -> String? {
+                guard let field = fields[key] else { return nil }
+                guard case .string(let s) = field.value else {
+                    throw SnippadParseError(line: field.line, message: "'\(key)' must be a string")
+                }
+                return s
+            }
+            guard let name = try string("name") else {
                 throw SnippadParseError(line: table.line, message: "this [[snippet]] has no name")
             }
-            guard let value = table.fields["value"] else {
+            guard let value = try string("value") else {
                 throw SnippadParseError(line: table.line, message: "this [[snippet]] has no value")
             }
-            return Snippet(id: index, name: name, value: value)
+            var snippet = Snippet(id: index, name: name, value: value)
+            snippet.next = try string("next")
+            snippet.list = try string("list").flatMap { $0.isEmpty ? nil : $0 }
+            if let k = try string("kind") {
+                guard let kind = SnippetKind(rawValue: k) else {
+                    throw SnippadParseError(line: fields["kind"]!.line,
+                                            message: "'kind' must be \"text\", \"rich\", \"file\" or \"image\"")
+                }
+                snippet.kind = kind
+                if kind == .image, Data(base64Encoded: value, options: .ignoreUnknownCharacters) == nil {
+                    throw SnippadParseError(line: fields["value"]!.line, message: "the value of an image snippet must be base64")
+                }
+            }
+            for key in ["once", "password"] {
+                guard let field = fields[key] else { continue }
+                guard case .bool(let b) = field.value else {
+                    throw SnippadParseError(line: field.line, message: "'\(key)' must be true or false")
+                }
+                if key == "once" { snippet.once = b } else { snippet.password = b }
+            }
+            if let field = fields["expires"] {
+                let seconds: Int?
+                switch field.value {
+                case .integer(let n): seconds = n
+                case .string(let s): seconds = SnippetDuration.seconds(from: s)
+                case .bool: seconds = nil
+                }
+                guard let seconds, seconds > 0 else {
+                    throw SnippadParseError(line: field.line,
+                                            message: "'expires' must be a number of seconds or a duration such as \"30s\", \"5m\" or \"1h30m\"")
+                }
+                snippet.expires = seconds
+            }
+            return (snippet, nextLine: fields["next"]?.line ?? table.line)
         }
+
+        let names = Set(snippets.map(\.0.name))
+        for (snippet, line) in snippets {
+            if let next = snippet.next, !names.contains(next) {
+                throw SnippadParseError(line: line, message: "there is no snippet named '\(next)' to chain to")
+            }
+        }
+        return snippets.map(\.0)
     }
 
     // MARK: - Keys
@@ -133,6 +224,42 @@ private struct Reader {
         skipBlanks()
         if peek() == "." { throw fail("dotted keys are not supported") }
         return key
+    }
+
+    // MARK: - Values
+
+    enum Value {
+        case string(String)
+        case integer(Int)
+        case bool(Bool)
+    }
+
+    private mutating func parseValue(for key: String) throws -> Value {
+        switch peek() {
+        case "\"", "'":
+            return .string(try parseString(for: key))
+        case "t", "f":
+            var word = String.UnicodeScalarView()
+            while let c = peek(), c.isBareKeyCharacter { word.append(c); i += 1 }
+            switch String(word) {
+            case "true": return .bool(true)
+            case "false": return .bool(false)
+            default: throw fail("the value of '\(key)' must be a string, a whole number, true or false")
+            }
+        case let c? where c == "+" || c == "-" || ("0"..."9").contains(c):
+            var digits = String.UnicodeScalarView()
+            if c == "+" || c == "-" { digits.append(c); i += 1 }
+            while let d = peek(), ("0"..."9").contains(d) || d == "_" {
+                if d != "_" { digits.append(d) }
+                i += 1
+            }
+            if let n = Int(String(digits)), peek().map({ !$0.isBareKeyCharacter && $0 != "." }) ?? true {
+                return .integer(n)
+            }
+            throw fail("the value of '\(key)' must be a string, a whole number, true or false")
+        default:
+            throw fail("the value of '\(key)' must be a string, a whole number, true or false")
+        }
     }
 
     // MARK: - Strings
@@ -282,5 +409,46 @@ private extension Unicode.Scalar {
         case "A"..."Z", "a"..."z", "0"..."9", "_", "-": true
         default: false
         }
+    }
+}
+
+/// Durations as the files write them: "45s", "5m", "1h30m", "2d". A bare
+/// number is seconds.
+enum SnippetDuration {
+
+    static func seconds(from text: String) -> Int? {
+        let t = text.trimmingCharacters(in: .whitespaces).lowercased()
+        if let n = Int(t) { return n }
+        var total = 0
+        var number = ""
+        for c in t where c != " " {
+            if c.isASCII && c.isNumber {
+                number.append(c)
+                continue
+            }
+            let unit: Int
+            switch c {
+            case "s": unit = 1
+            case "m": unit = 60
+            case "h": unit = 3600
+            case "d": unit = 86400
+            default: return nil
+            }
+            guard let n = Int(number) else { return nil }
+            total += n * unit
+            number = ""
+        }
+        return number.isEmpty && total > 0 ? total : nil
+    }
+
+    /// The shortest spelling, as the editor writes it: 90 -> "1m30s".
+    static func text(_ seconds: Int) -> String {
+        var rest = seconds
+        var out = ""
+        for (unit, letter) in [(86400, "d"), (3600, "h"), (60, "m"), (1, "s")] where rest >= unit {
+            out += "\(rest / unit)\(letter)"
+            rest %= unit
+        }
+        return out.isEmpty ? "0s" : out
     }
 }

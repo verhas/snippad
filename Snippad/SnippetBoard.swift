@@ -1,7 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// One button per snippet; a click puts the snippet's value on the clipboard.
+/// One button per snippet; a click puts the snippet's value on the clipboard,
+/// under the snippet's rules for expiry, paste-once and chaining.
 struct SnippetBoard: View {
     let snippets: [Snippet]
 
@@ -18,13 +19,16 @@ struct SnippetBoard: View {
                     Button {
                         copy(snippet)
                     } label: {
-                        Text(snippet.name)
-                            .lineLimit(2)
-                            .frame(maxWidth: .infinity, minHeight: 32)
+                        HStack(spacing: 4) {
+                            Text(snippet.name)
+                                .lineLimit(2)
+                            RuleBadges(expires: snippet.expires, once: snippet.once, next: snippet.next, password: snippet.password)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 32)
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
-                    .help(snippet.value)
+                    .help(snippet.preview)
                 }
             }
             .padding()
@@ -44,9 +48,7 @@ struct SnippetBoard: View {
     }
 
     private func copy(_ snippet: Snippet) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(snippet.value, forType: .string)
+        PasteEngine.shared.put(types: snippet.pasteboardTypes, name: snippet.name, rules: snippet.rules(in: snippets))
 
         clicks += 1
         let token = clicks

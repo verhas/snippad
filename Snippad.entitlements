@@ -8,5 +8,9 @@
 	     nothing else. -->
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
+	<!-- The hardened runtime blocks Apple events unless this is set: the
+	     Paste Guard asks Chromium browsers whether a window is incognito. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
 </dict>
 </plist>

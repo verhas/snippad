@@ -11,6 +11,16 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
+			<string>dev.verhas.snippad.history-item</string>
+			<key>UTTypeDescription</key>
+			<string>Snippad History Entry</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
 			<string>dev.verhas.snippad</string>
 			<key>UTTypeDescription</key>
 			<string>Snippad Snippets</string>
