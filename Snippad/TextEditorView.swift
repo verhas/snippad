@@ -28,6 +28,28 @@ final class TextEditorController {
     func goToLine(_ n: Int) { textView?.goToLine(n) }
     func transform(_ t: TextTransform) { textView?.transform(t) }
 
+    // MARK: Formatting (rich text)
+
+    func toggleBold() { textView?.toggleTrait(.boldFontMask) }
+    func toggleItalic() { textView?.toggleTrait(.italicFontMask) }
+    func toggleUnderline() { textView?.toggleLine(.underlineStyle) }
+    func toggleStrikethrough() { textView?.toggleLine(.strikethroughStyle) }
+    func bigger() { textView?.changeSize(by: 2) }
+    func smaller() { textView?.changeSize(by: -2) }
+    func setColor(_ color: NSColor?) { textView?.setAttribute(.foregroundColor, color) }
+    func setHighlight(_ color: NSColor?) { textView?.setAttribute(.backgroundColor, color) }
+    func align(_ alignment: NSTextAlignment) { textView?.align(alignment) }
+    func toggleList(numbered: Bool) { textView?.toggleList(numbered: numbered) }
+    func setFontFamily(_ family: String?) { textView?.setFamily(family) }
+    func heading(_ level: Int) { textView?.heading(level) }
+    func link() { textView?.askForLink() }
+    func clearFormatting() { textView?.clearFormatting() }
+    func showFonts() {
+        guard let textView else { return }
+        textView.window?.makeFirstResponder(textView)
+        NSFontManager.shared.orderFrontFontPanel(nil)
+    }
+
     private func textFinder(_ action: NSTextFinder.Action) {
         guard let textView else { return }
         textView.window?.makeFirstResponder(textView)
@@ -164,6 +186,10 @@ struct TextEditorView: NSViewRepresentable {
         }
         textView.isEditable = editable
         textView.isSelectable = true
+        // The Font and Colors panels, the ruler, and Writing Tools work on
+        // formatted text.
+        textView.usesFontPanel = rich != nil
+        textView.writingToolsBehavior = rich != nil && editable ? .complete : .limited
         textView.backgroundColor = editable ? .textBackgroundColor : .controlBackgroundColor
 
         c.ruler?.mode = lineNumbers
@@ -241,7 +267,19 @@ final class EditingTextView: NSTextView {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self else { return super.performKeyEquivalent(with: event) }
-        return handleLineKey(event) || super.performKeyEquivalent(with: event)
+        return handleLineKey(event) || handleFormatKey(event) || super.performKeyEquivalent(with: event)
+    }
+
+    /// ⌘B, ⌘I and ⌘U in formatted text.
+    private func handleFormatKey(_ event: NSEvent) -> Bool {
+        guard isRichText, isEditable, event.modifierFlags.intersection([.command, .option, .shift, .control]) == .command else { return false }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "b": toggleTrait(.boldFontMask)
+        case "i": toggleTrait(.italicFontMask)
+        case "u": toggleLine(.underlineStyle)
+        default: return false
+        }
+        return true
     }
 
     override func keyDown(with event: NSEvent) {
@@ -270,6 +308,203 @@ final class EditingTextView: NSTextView {
             }
         }
         onCopy?()
+    }
+
+    // MARK: Formatting
+
+    /// The selection, or nothing: then the typing attributes change.
+    private var formatRange: NSRange? {
+        let r = selectedRange()
+        return r.length > 0 ? r : nil
+    }
+
+    /// Changes the attributes of the selection as one undoable edit, or the
+    /// typing attributes when nothing is selected.
+    private func format(_ change: (NSTextStorage, NSRange) -> Void, typing: (inout [NSAttributedString.Key: Any]) -> Void) {
+        guard isEditable, isRichText else { NSSound.beep(); return }
+        guard let range = formatRange, let storage = textStorage else {
+            typing(&typingAttributes)
+            return
+        }
+        guard shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        change(storage, range)
+        storage.endEditing()
+        didChangeText()
+    }
+
+    private var defaultFont: NSFont { .systemFont(ofSize: NSFont.systemFontSize) }
+
+    func toggleTrait(_ trait: NSFontTraitMask) {
+        let fm = NSFontManager.shared
+        let all: Bool
+        if let range = formatRange, let storage = textStorage {
+            var every = true
+            storage.enumerateAttribute(.font, in: range) { value, _, stop in
+                if !fm.traits(of: (value as? NSFont) ?? defaultFont).contains(trait) { every = false; stop.pointee = true }
+            }
+            all = every
+        } else {
+            all = fm.traits(of: (typingAttributes[.font] as? NSFont) ?? defaultFont).contains(trait)
+        }
+        func converted(_ font: NSFont) -> NSFont {
+            all ? fm.convert(font, toNotHaveTrait: trait) : fm.convert(font, toHaveTrait: trait)
+        }
+        format({ storage, range in
+            storage.enumerateAttribute(.font, in: range) { value, r, _ in
+                storage.addAttribute(.font, value: converted((value as? NSFont) ?? self.defaultFont), range: r)
+            }
+        }, typing: { $0[.font] = converted(($0[.font] as? NSFont) ?? self.defaultFont) })
+    }
+
+    func toggleLine(_ key: NSAttributedString.Key) {
+        let on: Bool
+        if let range = formatRange, let storage = textStorage {
+            var every = true
+            storage.enumerateAttribute(key, in: range) { value, _, stop in
+                if (value as? Int ?? 0) == 0 { every = false; stop.pointee = true }
+            }
+            on = !every
+        } else {
+            on = (typingAttributes[key] as? Int ?? 0) == 0
+        }
+        let value = NSUnderlineStyle.single.rawValue
+        format({ storage, range in
+            if on { storage.addAttribute(key, value: value, range: range) } else { storage.removeAttribute(key, range: range) }
+        }, typing: { $0[key] = on ? value : nil })
+    }
+
+    func changeSize(by delta: CGFloat) {
+        func resized(_ font: NSFont) -> NSFont {
+            NSFontManager.shared.convert(font, toSize: min(288, max(6, font.pointSize + delta)))
+        }
+        format({ storage, range in
+            storage.enumerateAttribute(.font, in: range) { value, r, _ in
+                storage.addAttribute(.font, value: resized((value as? NSFont) ?? self.defaultFont), range: r)
+            }
+        }, typing: { $0[.font] = resized(($0[.font] as? NSFont) ?? self.defaultFont) })
+    }
+
+    func setFamily(_ family: String?) {
+        let fm = NSFontManager.shared
+        func changed(_ font: NSFont) -> NSFont {
+            guard let family else { return NSFont.systemFont(ofSize: font.pointSize).withTraits(of: font) }
+            return fm.convert(font, toFamily: family)
+        }
+        format({ storage, range in
+            storage.enumerateAttribute(.font, in: range) { value, r, _ in
+                storage.addAttribute(.font, value: changed((value as? NSFont) ?? self.defaultFont), range: r)
+            }
+        }, typing: { $0[.font] = changed(($0[.font] as? NSFont) ?? self.defaultFont) })
+    }
+
+    func setAttribute(_ key: NSAttributedString.Key, _ value: Any?) {
+        format({ storage, range in
+            if let value { storage.addAttribute(key, value: value, range: range) } else { storage.removeAttribute(key, range: range) }
+        }, typing: { $0[key] = value })
+    }
+
+    /// The paragraphs the selection touches.
+    private var paragraphRange: NSRange {
+        (string as NSString).paragraphRange(for: selectedRange())
+    }
+
+    func align(_ alignment: NSTextAlignment) {
+        guard isEditable, isRichText, let storage = textStorage else { NSSound.beep(); return }
+        let range = paragraphRange
+        guard shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.enumerateAttribute(.paragraphStyle, in: range) { value, r, _ in
+            let style = ((value as? NSParagraphStyle) ?? .default).mutableCopy() as! NSMutableParagraphStyle
+            style.alignment = alignment
+            storage.addAttribute(.paragraphStyle, value: style, range: r)
+        }
+        if range.length == 0 {
+            let style = ((typingAttributes[.paragraphStyle] as? NSParagraphStyle) ?? .default).mutableCopy() as! NSMutableParagraphStyle
+            style.alignment = alignment
+            typingAttributes[.paragraphStyle] = style
+        }
+        storage.endEditing()
+        didChangeText()
+    }
+
+    /// A heading: the paragraphs bold and larger (level 1 to 3), or body
+    /// text again (level 0).
+    func heading(_ level: Int) {
+        guard isEditable, isRichText, let storage = textStorage else { NSSound.beep(); return }
+        let range = paragraphRange
+        guard range.length > 0, shouldChangeText(in: range, replacementString: nil) else { return }
+        let body = NSFont.systemFontSize
+        let size: CGFloat = [body, body * 2, body * 1.6, body * 1.3][min(max(level, 0), 3)]
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: range) { value, r, _ in
+            let font = (value as? NSFont) ?? self.defaultFont
+            var changed = NSFontManager.shared.convert(font, toSize: size)
+            changed = level > 0 ? NSFontManager.shared.convert(changed, toHaveTrait: .boldFontMask)
+                : NSFontManager.shared.convert(changed, toNotHaveTrait: .boldFontMask)
+            storage.addAttribute(.font, value: changed, range: r)
+        }
+        storage.endEditing()
+        didChangeText()
+    }
+
+    /// Bullets (•) or numbers (1. 2. …) at the start of the selected lines;
+    /// lines that all have them lose them.
+    func toggleList(numbered: Bool) {
+        guard isEditable, let storage = textStorage else { NSSound.beep(); return }
+        let range = paragraphRange
+        let text = (string as NSString).substring(with: range)
+        var lines = text.components(separatedBy: "\n")
+        let endsWithBreak = text.hasSuffix("\n")
+        if endsWithBreak { lines.removeLast() }
+        let numberPrefix = #/^\d+\. /#
+        func marked(_ line: String) -> Bool { line.hasPrefix("• ") || line.firstMatch(of: numberPrefix) != nil }
+        func unmarked(_ line: String) -> String {
+            if line.hasPrefix("• ") { return String(line.dropFirst(2)) }
+            if let m = line.firstMatch(of: numberPrefix) { return String(line[m.range.upperBound...]) }
+            return line
+        }
+        let remove = !lines.isEmpty && lines.allSatisfy { marked($0) && ($0.hasPrefix("• ") != numbered) }
+        let changed = lines.enumerated().map { i, line in
+            remove ? unmarked(line) : (numbered ? "\(i + 1). " : "• ") + unmarked(line)
+        }.joined(separator: "\n") + (endsWithBreak ? "\n" : "")
+        guard changed != text, shouldChangeText(in: range, replacementString: changed) else { return }
+        let attrs = range.length > 0 ? storage.attributes(at: range.location, effectiveRange: nil) : typingAttributes
+        storage.replaceCharacters(in: range, with: NSAttributedString(string: changed, attributes: attrs))
+        didChangeText()
+        setSelectedRange(NSRange(location: range.location, length: (changed as NSString).length))
+    }
+
+    func askForLink() {
+        guard isEditable, isRichText, let range = formatRange else { NSSound.beep(); return }
+        let alert = NSAlert()
+        alert.messageText = "Link"
+        alert.informativeText = "The address the selected text links to. Leave it empty to remove the link."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "https://"
+        if let existing = textStorage?.attribute(.link, at: range.location, effectiveRange: nil) {
+            field.stringValue = (existing as? URL)?.absoluteString ?? (existing as? String) ?? ""
+        }
+        alert.accessoryView = field
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let text = field.stringValue.trimmingCharacters(in: .whitespaces)
+        setSelectedRange(range)
+        setAttribute(.link, text.isEmpty ? nil : (URL(string: text) ?? text))
+    }
+
+    /// The selection, or everything, in plain body text again.
+    func clearFormatting() {
+        guard isEditable, isRichText, let storage = textStorage else { NSSound.beep(); return }
+        let range = formatRange ?? NSRange(location: 0, length: storage.length)
+        guard shouldChangeText(in: range, replacementString: nil) else { return }
+        storage.beginEditing()
+        storage.setAttributes([.font: defaultFont, .foregroundColor: NSColor.textColor], range: range)
+        storage.endEditing()
+        didChangeText()
+        typingAttributes = [.font: defaultFont, .foregroundColor: NSColor.textColor]
     }
 
     /// One of the Text menu's commands, on the selection or the whole text.
@@ -436,5 +671,93 @@ final class LineNumberRuler: NSRulerView {
             let extra = layout.extraLineFragmentRect
             if !extra.isEmpty { draw(number, atY: extra.minY) }
         }
+    }
+}
+
+private extension NSFont {
+    /// The same bold and italic as `other`.
+    func withTraits(of other: NSFont) -> NSFont {
+        var font = self
+        let traits = NSFontManager.shared.traits(of: other)
+        for t in [NSFontTraitMask.boldFontMask, .italicFontMask] where traits.contains(t) {
+            font = NSFontManager.shared.convert(font, toHaveTrait: t)
+        }
+        return font
+    }
+}
+
+/// The formatting buttons above a rich text being edited.
+struct RichTextBar: View {
+    let editor: TextEditorController
+    @State private var color: Color = .primary
+    @State private var highlight: Color = .yellow
+
+    private static let families = ["Helvetica Neue", "Times New Roman", "Georgia", "Avenir Next", "Menlo", "Courier New"]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Menu {
+                Button("Title") { editor.heading(1) }
+                Button("Heading") { editor.heading(2) }
+                Button("Subheading") { editor.heading(3) }
+                Button("Body") { editor.heading(0) }
+            } label: {
+                Image(systemName: "textformat.size")
+            }
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Title, heading, subheading or body text for the selected paragraphs")
+            Menu {
+                Button("System Font") { editor.setFontFamily(nil) }
+                Divider()
+                ForEach(Self.families.filter { NSFontManager.shared.availableFontFamilies.contains($0) }, id: \.self) { family in
+                    Button(family) { editor.setFontFamily(family) }
+                }
+                Divider()
+                Button("Show Fonts\u{2026}") { editor.showFonts() }
+            } label: {
+                Image(systemName: "textformat")
+            }
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("The font of the selection; Show Fonts for all of them")
+            button("Smaller", "textformat.size.smaller", editor.smaller)
+            button("Bigger", "textformat.size.larger", editor.bigger)
+            Divider().frame(height: 16)
+            button("Bold (⌘B)", "bold", editor.toggleBold)
+            button("Italic (⌘I)", "italic", editor.toggleItalic)
+            button("Underline (⌘U)", "underline", editor.toggleUnderline)
+            button("Strikethrough", "strikethrough", editor.toggleStrikethrough)
+            Divider().frame(height: 16)
+            ColorPicker("Text colour", selection: Binding(get: { color }, set: { color = $0; editor.setColor(NSColor($0)) }))
+                .labelsHidden()
+                .help("The colour of the selected text")
+            ColorPicker("Highlight", selection: Binding(get: { highlight }, set: { highlight = $0; editor.setHighlight(NSColor($0)) }))
+                .labelsHidden()
+                .help("Highlight the selected text in this colour")
+            button("Remove Highlight", "highlighter", { editor.setHighlight(nil) })
+            Divider().frame(height: 16)
+            button("Align Left", "text.alignleft", { editor.align(.left) })
+            button("Centre", "text.aligncenter", { editor.align(.center) })
+            button("Align Right", "text.alignright", { editor.align(.right) })
+            button("Justify", "text.justify", { editor.align(.justified) })
+            Divider().frame(height: 16)
+            button("Bulleted List", "list.bullet", { editor.toggleList(numbered: false) })
+            button("Numbered List", "list.number", { editor.toggleList(numbered: true) })
+            button("Link…", "link", editor.link)
+            button("Clear Formatting", "eraser", editor.clearFormatting)
+            Spacer(minLength: 0)
+        }
+        .buttonStyle(.borderless)
+        .labelStyle(.iconOnly)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.bar)
+    }
+
+    private func button(_ title: String, _ symbol: String, _ action: @escaping () -> Void) -> some View {
+        Button(title, systemImage: symbol, action: action)
+            .help(title)
+            .frame(width: 24)
     }
 }

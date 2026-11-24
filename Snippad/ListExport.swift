@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 ///
 /// Each entry has its date, list, kind, source application, pinned state and
 /// label, and its content: the text, the file paths, or a PNG image in
-/// base64. Rich text is exported with its plain text and its RTF. Password
+/// base64 (with, for an edited image, its original and edits as JSON). Rich text is exported with its plain text and its RTF. Password
 /// values are never written: such an entry has `password = true` and no
 /// value.
 enum ListExport {
@@ -57,6 +57,8 @@ enum ListExport {
                     f.append(("files", .strings(item.fileURLs.map(\.path))))
                 case .image:
                     if let png = item.pngData { f.append(("image_png_base64", .string(png.base64EncodedString()))) }
+                    // An edited image: the original and what was added, as JSON.
+                    if let edits = item.edits { f.append(("image_edits", .string(edits.json))) }
                 default:
                     if let s = item.string { f.append(("text", .string(s))) }
                     if item.kind == .richText, let rich = item.attributedString,

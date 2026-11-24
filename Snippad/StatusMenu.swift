@@ -9,8 +9,12 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private var hotKey: HotKey?
-    private var hotKeyRegistered = false
     private var pickerHotKey: HotKey?
+    private var organizerHotKey: HotKey?
+    /// What is registered now: the keys of each shortcut, nil when off.
+    private var registered: [String: KeyShortcut?] = [:]
+    /// Shortcuts macOS would not give to Snippad (another app has them).
+    private(set) var unavailableHotKeys: Set<KeyShortcut> = []
     /// The app that was in front when the menu opened from the shortcut, to
     /// give focus back to, and paste into.
     private var previousApp: NSRunningApplication?
@@ -25,10 +29,12 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let image = NSImage(systemSymbolName: "list.clipboard", accessibilityDescription: "Snippad")
         image?.isTemplate = true
         item.button?.image = image
-        item.button?.toolTip = "Snippad clipboard history (⌃⌘V)"
-        let menu = NSMenu()
-        menu.delegate = self
-        item.menu = menu
+        item.button?.toolTip = tooltip
+        // Opened by hand rather than through `item.menu`, so it always hangs
+        // from the icon's left edge.
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked(_:))
+        item.button?.sendAction(on: [.leftMouseDown, .rightMouseDown])
         statusItem = item
         settingsChanged()
     }
@@ -43,25 +49,46 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         statusItem?.button?.image = image
         statusItem?.button?.toolTip = blocked
             ? "Snippad cannot see ⌘V: allow Accessibility (open this menu)"
-            : "Snippad clipboard history (⌃⌘V)"
+            : tooltip
     }
 
-    /// Follows the settings: the shortcut on or off.
+    private var tooltip: String {
+        settings.value.hotKeyEnabled ? "Snippad clipboard history (\(settings.value.historyShortcut.display))" : "Snippad clipboard history"
+    }
+
+    /// Follows the settings: each shortcut on or off, and its keys.
     func settingsChanged() {
-        let picker = settings.value.pickerHotKeyEnabled
-        if picker != (pickerHotKey != nil) {
-            pickerHotKey?.unregister()
-            pickerHotKey = picker ? HotKey(keyCode: kVK_ANSI_V, modifiers: cmdKey | shiftKey) { PickerPanel.toggle() } : nil
+        SnippetShortcuts.refresh()
+        let v = settings.value
+        let wanted: [String: KeyShortcut?] = [
+            "history": v.hotKeyEnabled ? v.historyShortcut : nil,
+            "picker": v.pickerHotKeyEnabled ? v.pickerShortcut : nil,
+            "organizer": v.organizerHotKeyEnabled ? v.organizerShortcut : nil,
+        ]
+        guard wanted != registered else { return }
+        registered = wanted
+        for key in [hotKey, pickerHotKey, organizerHotKey] { key?.unregister() }
+        var failed: Set<KeyShortcut> = []
+        func register(_ shortcut: KeyShortcut??, _ action: @escaping () -> Void) -> HotKey? {
+            guard let shortcut = shortcut ?? nil else { return nil }
+            let key = HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.carbonModifiers, action: action)
+            if key == nil { failed.insert(shortcut) }
+            return key
         }
-        let wanted = settings.value.hotKeyEnabled
-        guard wanted != hotKeyRegistered else { return }
-        hotKey?.unregister()
-        hotKey = nil
-        hotKeyRegistered = wanted
-        guard wanted else { return }
-        hotKey = HotKey(keyCode: kVK_ANSI_V, modifiers: cmdKey | controlKey) { [weak self] in
-            self?.popUpAtMouse()
-        }
+        hotKey = register(wanted["history"]) { [weak self] in self?.popUpAtMouse() }
+        pickerHotKey = register(wanted["picker"]) { PickerPanel.toggle() }
+        organizerHotKey = register(wanted["organizer"]) { HistoryWindow.show() }
+        unavailableHotKeys = failed
+        updateIcon()
+    }
+
+    @objc private func statusItemClicked(_ button: NSStatusBarButton) {
+        let menu = NSMenu()
+        menuNeedsUpdate(menu)
+        button.highlight(true)
+        let below = button.isFlipped ? button.bounds.maxY + 5 : button.bounds.minY - 5
+        menu.popUp(positioning: nil, at: NSPoint(x: button.bounds.minX, y: below), in: button)
+        button.highlight(false)
     }
 
     /// The same menu, opened where the mouse is, from the keyboard shortcut.
@@ -87,7 +114,12 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let history = ClipboardHistory.shared
         let lists = settings.value.lists
 
-        menu.addItem(withTitle: "Snippad Organizer…", action: #selector(showHistory), keyEquivalent: "h").target = self
+        let organizer = menu.addItem(withTitle: "Snippad Organizer…", action: #selector(showHistory), keyEquivalent: "")
+        if settings.value.organizerHotKeyEnabled, let (key, mask) = settings.value.organizerShortcut.menuKeyEquivalent {
+            organizer.keyEquivalent = key
+            organizer.keyEquivalentModifierMask = mask
+        }
+        organizer.target = self
         menu.addItem(.separator())
 
         if let current = PasteEngine.shared.current, PasteEngine.shared.holdsOwnValue {
@@ -96,7 +128,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             if current.rules.next != nil { notes.append("chained") }
             if current.rules.once { notes.append("paste once") }
             if let s = current.rules.expires { notes.append("expires after \(SnippetDuration.text(s))") }
-            let header = NSMenuItem(title: "On clipboard: \(current.name)" + (notes.isEmpty ? "" : " (\(notes.joined(separator: ", ")))"),
+            let header = NSMenuItem(title: "On clipboard: \(Self.short(current.name, 50))" + (notes.isEmpty ? "" : " (\(notes.joined(separator: ", ")))"),
                                     action: nil, keyEquivalent: "")
             header.isEnabled = false
             menu.addItem(header)
@@ -127,7 +159,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         // A line with a submenu has no key equivalent of its own; hidden
         // twins carry the numbers.
         for (index, item) in recent.prefix(10).enumerated() {
-            let twin = NSMenuItem(title: item.title, action: #selector(chooseHistoryItem(_:)),
+            let twin = NSMenuItem(title: Self.short(item.title, 60), action: #selector(chooseHistoryItem(_:)),
                                   keyEquivalent: index < 9 ? "\(index + 1)" : "0")
             twin.keyEquivalentModifierMask = []
             twin.target = self
@@ -153,6 +185,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
+        menu.addItem(screenshotItem())
         let snippets = NSMenuItem(title: "Snippets", action: nil, keyEquivalent: "")
         snippets.submenu = snippetsMenu()
         menu.addItem(snippets)
@@ -163,6 +196,16 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let capture = menu.addItem(withTitle: "Record Clipboard History", action: #selector(toggleCapture), keyEquivalent: "")
         capture.target = self
         capture.state = history.isCapturing ? .on : .off
+        let size = menu.addItem(withTitle: "History: \(history.diskUsageText)", action: nil, keyEquivalent: "")
+        size.isEnabled = false
+        size.toolTip = "What the clipboard history takes on disk, in ~/Library/Application Support/Snippad/History"
+        if let batch = history.undoableDelete {
+            let undo = menu.addItem(withTitle: batch.items.count == 1 ? "Undo Delete of \u{201C}\(Self.short(batch.items[0].title, 40))\u{201D}"
+                                        : "Undo Delete of \(batch.items.count) Entries",
+                                    action: #selector(undoDelete), keyEquivalent: "")
+            undo.target = self
+            undo.toolTip = "Deleted entries can be brought back for five minutes"
+        }
         let guardItem = menu.addItem(withTitle: "Paste Guard", action: #selector(togglePasteGuard), keyEquivalent: "")
         guardItem.target = self
         guardItem.state = settings.value.pasteGuardEnabled ? .on : .off
@@ -177,7 +220,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         }
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Snippad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        // No ⌘Q: that only closes the Organizer, so Snippad is not quit by
+        // a habit.
+        menu.addItem(withTitle: "Quit Snippad", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
     }
 
     private func accessWarning(in menu: NSMenu) {
@@ -193,7 +238,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     private func menuItem(for item: ClipItem, shortcut: String?) -> NSMenuItem {
-        let title = item.title.count > 60 ? String(item.title.prefix(57)) + "…" : item.title
+        let title = Self.short(item.title, 60)
         let menuItem = NSMenuItem(title: title, action: #selector(chooseHistoryItem(_:)), keyEquivalent: shortcut ?? "")
         menuItem.keyEquivalentModifierMask = []
         menuItem.target = self
@@ -269,6 +314,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
                     item.target = self
                     item.representedObject = SnippetChoice(snippet: snippet, all: snippets)
                     item.toolTip = snippet.preview
+                    if let shortcut = snippet.shortcut.flatMap(KeyShortcut.init), let (key, mask) = shortcut.menuKeyEquivalent {
+                        item.keyEquivalent = key
+                        item.keyEquivalentModifierMask = mask
+                    }
                     if snippet.password { item.image = NSImage(systemSymbolName: "key", accessibilityDescription: "Password") }
                     sub.addItem(item)
                 }
@@ -298,6 +347,83 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         pasteIfWanted()
     }
 
+    // MARK: - Screenshots
+
+    private func screenshotItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Take Screenshot", action: nil, keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
+        let sub = NSMenu()
+        if Screenshots.isCountingDown {
+            sub.addItem(withTitle: "Cancel the Delayed Screenshot", action: #selector(cancelScreenshot), keyEquivalent: "").target = self
+            sub.addItem(.separator())
+        }
+        let delay = settings.value.screenshotDelay
+        sub.addItem(screensItem("Screen", delay: 0))
+        sub.addItem(screensItem("Screen in \(delay) Seconds", delay: delay))
+        sub.addItem(.separator())
+        sub.addItem(withTitle: "Window", action: #selector(screenshotWindow), keyEquivalent: "").target = self
+        sub.addItem(withTitle: "Window with Shadow", action: #selector(screenshotWindowShadow), keyEquivalent: "").target = self
+        sub.addItem(withTitle: "Area", action: #selector(screenshotArea), keyEquivalent: "").target = self
+        sub.addItem(.separator())
+        let target = sub.addItem(withTitle: "Goes to \u{201C}\(settings.list(settings.value.screenshotList).name)\u{201D}",
+                                 action: nil, keyEquivalent: "")
+        target.isEnabled = false
+        item.submenu = sub
+        return item
+    }
+
+    /// One screen: the item itself. Several: a submenu naming them.
+    private func screensItem(_ title: String, delay: Int) -> NSMenuItem {
+        let screens = Screenshots.screens
+        if screens.count <= 1 {
+            let item = NSMenuItem(title: title, action: #selector(screenshotScreen(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ScreenChoice(id: screens.first?.id ?? CGMainDisplayID(), delay: delay)
+            return item
+        }
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for screen in screens {
+            let entry = sub.addItem(withTitle: screen.name + (screen.isMain ? " (main)" : ""),
+                                    action: #selector(screenshotScreen(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = ScreenChoice(id: screen.id, delay: delay)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func screenshotScreen(_ sender: NSMenuItem) {
+        guard let choice = sender.representedObject as? ScreenChoice else { return }
+        Screenshots.captureScreen(choice.id, delay: choice.delay)
+    }
+    @objc private func screenshotWindow() { Screenshots.capture(.window) }
+    @objc private func screenshotWindowShadow() { Screenshots.capture(.windowWithShadow) }
+    @objc private func screenshotArea() { Screenshots.capture(.area) }
+    @objc private func cancelScreenshot() { Screenshots.cancelCountdown() }
+
+    /// The seconds left before a delayed screenshot, beside the menu bar
+    /// icon; nil puts the icon back.
+    func showCountdown(_ seconds: Int?) {
+        guard let button = statusItem?.button else { return }
+        if let seconds {
+            statusItem?.length = NSStatusItem.variableLength
+            button.title = " \(seconds)"
+            button.imagePosition = .imageLeft
+            button.toolTip = "A screenshot in \(seconds) seconds (open the menu to cancel)"
+        } else {
+            button.title = ""
+            statusItem?.length = NSStatusItem.squareLength
+            button.imagePosition = .imageOnly
+            updateIcon()
+        }
+    }
+
+    /// Keeps the menu narrow: a long line ends in an ellipsis.
+    static func short(_ s: String, _ max: Int) -> String {
+        s.count > max ? String(s.prefix(max - 1)) + "\u{2026}" : s
+    }
+
     /// The commands of one history entry: its submenu in the history menu.
     func actionsMenu(for item: ClipItem) -> NSMenu {
         let menu = NSMenu()
@@ -313,7 +439,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         } else if item.kind == .files {
             let missing = Set(item.missingFiles)
             preview = (item.filesGone ? "No longer exists:\n" : "")
-                + item.fileURLs.prefix(3).map { $0.path + (missing.contains($0) && !item.filesGone ? "  (missing)" : "") }
+                + item.fileURLs.prefix(3).map { Self.short($0.path, 80) + (missing.contains($0) && !item.filesGone ? "  (missing)" : "") }
                     .joined(separator: "\n")
                 + (item.fileURLs.count > 3 ? "\n…" : "")
         } else {
@@ -324,7 +450,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         header.isEnabled = false
         let when = item.date.formatted(date: .abbreviated, time: .shortened)
         header.attributedTitle = NSAttributedString(
-            string: preview.split(separator: "\n", omittingEmptySubsequences: false).prefix(3).joined(separator: "\n")
+            string: preview.split(separator: "\n", omittingEmptySubsequences: false).prefix(3).map { Self.short(String($0), 80) }.joined(separator: "\n")
                 + "\n" + [item.sourceApp, when, settings.list(item.list).name].compactMap { $0 }.joined(separator: " · "),
             attributes: [.font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.secondaryLabelColor])
         menu.addItem(header)
@@ -334,10 +460,14 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         add(menu, "Paste", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .main)).isEnabled = !item.filesGone
         if ClipboardHistory.shared.hasRichText(item.id) {
             add(menu, "Paste as Rich Text", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .richText))
+            if !item.isPassword {
+                add(menu, "Paste as Markdown", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .markdown))
+            }
         }
         add(menu, "Paste Original", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .original)).isEnabled = !item.filesGone
         menu.addItem(.separator())
         add(menu, item.pinned ? "Unpin" : "Pin", #selector(entryTogglePin(_:)), context)
+        add(menu, "Rename\u{2026}", #selector(entryRename(_:)), context)
         let move = NSMenuItem(title: "Move to List", action: nil, keyEquivalent: "")
         let lists = NSMenu()
         for list in settings.value.lists {
@@ -451,19 +581,24 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
     @objc private func entryDelete(_ sender: NSMenuItem) {
         guard let c = sender.representedObject as? EntryContext else { return }
-        ClipboardHistory.shared.delete(c.id)
+        ClipboardHistory.shared.delete(undoably: [c.id])
     }
+    @objc private func entryRename(_ sender: NSMenuItem) {
+        guard let c = sender.representedObject as? EntryContext, let item = ClipboardHistory.shared.item(c.id) else { return }
+        renameEntry(item)
+    }
+    @objc private func undoDelete() { ClipboardHistory.shared.undoDelete() }
     @objc private func entryFileContents(_ sender: NSMenuItem) {
         guard let c = sender.representedObject as? EntryContext else { return }
         copyFileContents(of: c.id)
     }
     @objc private func entryPaths(_ sender: NSMenuItem) {
         guard let c = sender.representedObject as? EntryContext else { return }
-        try? ClipboardHistory.shared.copyFileText(of: c.id, .paths)
+        copyFileText(of: c.id, .paths)
     }
     @objc private func entryNames(_ sender: NSMenuItem) {
         guard let c = sender.representedObject as? EntryContext else { return }
-        try? ClipboardHistory.shared.copyFileText(of: c.id, .names)
+        copyFileText(of: c.id, .names)
     }
     @objc private func entryReveal(_ sender: NSMenuItem) {
         guard let c = sender.representedObject as? EntryContext else { return }
@@ -486,13 +621,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     private func pasteIfWanted() {
-        guard settings.value.pasteAfterChoosing, PasteInterceptor.isTrusted else { return }
         let target = previousApp
-        target?.activate()
         previousApp = nil
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            PasteInterceptor.pasteIntoFrontApp()
-        }
+        PasteInterceptor.pasteIfWanted(activating: target)
     }
 
     /// Right-click on a files entry: put the contents of its files on the
@@ -543,6 +674,15 @@ private final class SnippetChoice: NSObject {
     init(snippet: Snippet, all: [Snippet]) {
         self.snippet = snippet
         self.all = all
+    }
+}
+
+private final class ScreenChoice: NSObject {
+    let id: CGDirectDisplayID
+    let delay: Int
+    init(id: CGDirectDisplayID, delay: Int) {
+        self.id = id
+        self.delay = delay
     }
 }
 

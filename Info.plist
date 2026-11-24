@@ -21,6 +21,16 @@
 		</dict>
 		<dict>
 			<key>UTTypeIdentifier</key>
+			<string>dev.verhas.snippad.snippet</string>
+			<key>UTTypeDescription</key>
+			<string>Snippad Snippet</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
 			<string>dev.verhas.snippad</string>
 			<key>UTTypeDescription</key>
 			<string>Snippad Snippets</string>

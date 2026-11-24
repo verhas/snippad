@@ -63,11 +63,21 @@ enum PickerPanel {
     static func choose(_ id: UUID) {
         close()
         guard ClipboardHistory.shared.copy(id) else { return NSSound.beep() }
-        guard SettingsStore.shared.value.pasteAfterChoosing, PasteInterceptor.isTrusted else { return }
-        target?.activate()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            PasteInterceptor.pasteIntoFrontApp()
+        PasteInterceptor.pasteIfWanted(activating: target)
+    }
+
+    /// Several entries: their texts as one, a line break between them, then
+    /// pasted if wanted.
+    static func choose(_ ids: [UUID]) {
+        guard ids.count > 1 else { return ids.first.map(choose) ?? () }
+        close()
+        do {
+            try ClipboardHistory.shared.copyJoined(ids)
+        } catch {
+            PasteNotice.show(error.localizedDescription, prefix: "Not joined.")
+            return
         }
+        PasteInterceptor.pasteIfWanted(activating: target)
     }
 }
 
@@ -93,6 +103,8 @@ private struct PickerView: View {
     @State private var settings = SettingsStore.shared
     @State private var query = ""
     @State private var selection: UUID?
+    /// Entries added with ⌘-click or ⇧-click, to paste together.
+    @State private var marked: [UUID] = []
     @FocusState private var searchFocused: Bool
 
     private var listID: String? { settings.value.preferredList }
@@ -124,7 +136,7 @@ private struct PickerView: View {
                 .focused($searchFocused)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .onSubmit { if let first = selection ?? entries.first?.id { PickerPanel.choose(first) } }
+                .onSubmit { submit() }
             if hiddenCount > 0 {
                 Label("\(hiddenCount) entries are hidden: the Paste Guard does not let their lists into \(target?.localizedName ?? "this app").",
                       systemImage: "hand.raised")
@@ -133,13 +145,14 @@ private struct PickerView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             List(entries, selection: $selection) { item in
-                PickerRow(item: item, listName: listID == nil && settings.value.lists.count > 1 ? settings.list(item.list).name : nil)
+                PickerRow(item: item, listName: listID == nil && settings.value.lists.count > 1 ? settings.list(item.list).name : nil,
+                          mark: marked.firstIndex(of: item.id).map { $0 + 1 })
                     .tag(item.id)
                     .contentShape(Rectangle())
-                    .onTapGesture { PickerPanel.choose(item.id) }
+                    .onTapGesture { click(item.id) }
             }
             .onKeyPress(.return) {
-                if let selection { PickerPanel.choose(selection) }
+                submit()
                 return .handled
             }
             .overlay {
@@ -148,7 +161,19 @@ private struct PickerView: View {
                 }
             }
         }
-        .onExitCommand(perform: close)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !marked.isEmpty {
+                HStack {
+                    Text("\(marked.count) marked: Return pastes them together, one per line")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear") { marked = [] }.controlSize(.small)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(.bar)
+            }
+        }
+        .onExitCommand { if marked.isEmpty { close() } else { marked = [] } }
         .onAppear {
             selection = entries.first?.id
             searchFocused = true
@@ -163,6 +188,30 @@ private struct PickerView: View {
         }
     }
 
+    /// A click chooses; with ⌘ or ⇧ it marks the entry to paste with
+    /// others, in the order marked (⇧ marks the entries in between too).
+    private func click(_ id: UUID) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.shift), let from = marked.last ?? selection, let a = entries.firstIndex(where: { $0.id == from }),
+           let b = entries.firstIndex(where: { $0.id == id }) {
+            let range = a <= b ? Array(entries[a...b]) : Array(entries[b...a].reversed())
+            for item in range where !marked.contains(item.id) { marked.append(item.id) }
+        } else if flags.contains(.command) {
+            if let i = marked.firstIndex(of: id) { marked.remove(at: i) } else { marked.append(id) }
+        } else {
+            PickerPanel.choose(id)
+        }
+        selection = id
+    }
+
+    private func submit() {
+        if !marked.isEmpty {
+            PickerPanel.choose(marked)
+        } else if let first = selection ?? entries.first?.id {
+            PickerPanel.choose(first)
+        }
+    }
+
     private func move(_ by: Int) {
         let ids = entries.map(\.id)
         guard !ids.isEmpty else { return }
@@ -174,6 +223,8 @@ private struct PickerView: View {
 private struct PickerRow: View {
     let item: ClipItem
     let listName: String?
+    /// Its place among the marked entries.
+    var mark: Int? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -195,6 +246,10 @@ private struct PickerRow: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            if let mark {
+                Image(systemName: "\(min(mark, 50)).circle.fill").foregroundStyle(Color.accentColor)
+                    .help("Marked \(mark.formatted(.number)): pasted in this place")
+            }
             if item.pinned { Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary) }
         }
         .padding(.vertical, 2)

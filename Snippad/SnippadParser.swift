@@ -17,9 +17,9 @@ enum SnippetKind: String, CaseIterable, Sendable {
 /// happens to the clipboard afterwards.
 struct Snippet: Identifiable, Equatable, Sendable {
     /// Position in the file, so two snippets with the same name stay distinct.
-    let id: Int
-    let name: String
-    let value: String
+    var id: Int
+    var name: String
+    var value: String
     /// Seconds after which the value is taken off the clipboard again, if it
     /// is still there.
     var expires: Int? = nil
@@ -35,16 +35,119 @@ struct Snippet: Identifiable, Equatable, Sendable {
     /// default list (Clipboard).
     var list: String? = nil
     var kind: SnippetKind = .text
+    /// A system-wide shortcut that copies it, as `"ctrl+opt+k"`.
+    var shortcut: String? = nil
+    /// An edited image's original and edits; the value is the result.
+    var edits: ImageEdits? = nil
+    /// The button's colour, as `"#RRGGBB"`; nil shows one picked from the
+    /// name, so it stays the same every time.
+    var color: String? = nil
+    /// An SF Symbol shown in a corner of the button.
+    var icon: String? = nil
+    var iconCorner: SnippetCorner = .topTrailing
+    /// Where the button sits in its window, top left; nil places it after
+    /// the others.
+    var origin: SnippetPoint? = nil
+    /// The button's size; nil is what its name needs.
+    var size: SnippetSize? = nil
+}
+
+/// A corner of a snippet's button, where its icon sits.
+enum SnippetCorner: String, CaseIterable, Sendable {
+    case topLeading = "top-left"
+    case topTrailing = "top-right"
+    case bottomLeading = "bottom-left"
+    case bottomTrailing = "bottom-right"
+
+    var title: String {
+        switch self {
+        case .topLeading: "Top Left"
+        case .topTrailing: "Top Right"
+        case .bottomLeading: "Bottom Left"
+        case .bottomTrailing: "Bottom Right"
+        }
+    }
+
+    var isTop: Bool { self == .topLeading || self == .topTrailing }
+    var isLeading: Bool { self == .topLeading || self == .bottomLeading }
+
+    /// The corner nearest to a point in a box of that size.
+    static func nearest(to x: Double, _ y: Double, width: Double, height: Double) -> SnippetCorner {
+        switch (y < height / 2, x < width / 2) {
+        case (true, true): .topLeading
+        case (true, false): .topTrailing
+        case (false, true): .bottomLeading
+        case (false, false): .bottomTrailing
+        }
+    }
+}
+
+struct SnippetPoint: Equatable, Sendable {
+    var x: Int
+    var y: Int
+}
+
+struct SnippetSize: Equatable, Sendable {
+    var width: Int
+    var height: Int
+    static let minimum = SnippetSize(width: 40, height: 24)
+}
+
+/// The colours a snippet gets when none is chosen: a random one for a new
+/// snippet, one picked from the name for snippets of files written before
+/// snippets had colours.
+enum SnippetColors {
+    static let palette = ["#F28B82", "#FBBC04", "#FFF475", "#CCFF90", "#A7FFEB", "#CBF0F8", "#AECBFA",
+                          "#D7AEFB", "#FDCFE8", "#E6C9A8", "#B5EAD7", "#FFDAC1", "#C7CEEA", "#E2F0CB"]
+
+    static func random() -> String { palette.randomElement()! }
+
+    /// The same colour for the same name, on every Mac and every launch
+    /// (String.hashValue changes from launch to launch).
+    static func derived(from name: String) -> String {
+        var hash: UInt32 = 2166136261
+        for byte in name.utf8 { hash = (hash ^ UInt32(byte)) &* 16777619 }
+        return palette[Int(hash % UInt32(palette.count))]
+    }
+
+    /// `#RRGGBB` (or without `#`), as red, green and blue from 0 to 1.
+    static func components(_ hex: String) -> (red: Double, green: Double, blue: Double)? {
+        var t = hex.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("#") { t.removeFirst() }
+        guard t.count == 6, let v = UInt32(t, radix: 16) else { return nil }
+        return (Double((v >> 16) & 0xFF) / 255, Double((v >> 8) & 0xFF) / 255, Double(v & 0xFF) / 255)
+    }
+
+    static func hex(red: Double, green: Double, blue: Double) -> String {
+        func byte(_ c: Double) -> Int { Int((min(max(c, 0), 1) * 255).rounded()) }
+        return String(format: "#%02X%02X%02X", byte(red), byte(green), byte(blue))
+    }
+
+    /// Whether dark text reads better than white on that colour.
+    static func isLight(_ hex: String) -> Bool {
+        guard let c = components(hex) else { return true }
+        func linear(_ v: Double) -> Double { v <= 0.03928 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4) }
+        let luminance = 0.2126 * linear(c.red) + 0.7152 * linear(c.green) + 0.0722 * linear(c.blue)
+        // Where black and white have the same contrast.
+        return luminance > 0.179
+    }
 }
 
 extension Snippet {
+    /// The colour the button shows.
+    var shownColor: String { color ?? SnippetColors.derived(from: name) }
+
     func with(name: String? = nil, value: String? = nil) -> Snippet {
-        Snippet(id: id, name: name ?? self.name, value: value ?? self.value,
-                expires: expires, once: once, next: next, password: password, list: list, kind: kind)
+        var s = self
+        if let name { s.name = name }
+        if let value { s.value = value }
+        return s
     }
 
     func with(id: Int) -> Snippet {
-        Snippet(id: id, name: name, value: value, expires: expires, once: once, next: next, password: password, list: list, kind: kind)
+        var s = self
+        s.id = id
+        return s
     }
 }
 
@@ -157,6 +260,13 @@ private struct Reader {
             var snippet = Snippet(id: index, name: name, value: value)
             snippet.next = try string("next")
             snippet.list = try string("list").flatMap { $0.isEmpty ? nil : $0 }
+            if let text = try string("shortcut"), !text.isEmpty {
+                guard let shortcut = KeyShortcut(text), shortcut.isUsable else {
+                    throw SnippadParseError(line: fields["shortcut"]!.line,
+                                            message: "'shortcut' must be keys like \"ctrl+opt+k\" or \"cmd+shift+1\", with ctrl, opt or cmd (a function key such as \"f5\" may stand alone)")
+                }
+                snippet.shortcut = shortcut.text
+            }
             if let k = try string("kind") {
                 guard let kind = SnippetKind(rawValue: k) else {
                     throw SnippadParseError(line: fields["kind"]!.line,
@@ -167,6 +277,48 @@ private struct Reader {
                     throw SnippadParseError(line: fields["value"]!.line, message: "the value of an image snippet must be base64")
                 }
             }
+            if let json = try string("edits"), !json.isEmpty {
+                guard snippet.kind == .image else {
+                    throw SnippadParseError(line: fields["edits"]!.line, message: "'edits' is only for image snippets (kind = \"image\")")
+                }
+                do {
+                    snippet.edits = try ImageEdits(json: json)
+                } catch {
+                    throw SnippadParseError(line: fields["edits"]!.line, message: "'edits' cannot be read: \(error.localizedDescription)")
+                }
+            }
+            if let text = try string("color"), !text.isEmpty {
+                guard SnippetColors.components(text) != nil else {
+                    throw SnippadParseError(line: fields["color"]!.line, message: "'color' must be a colour like \"#A7FFEB\"")
+                }
+                snippet.color = text.hasPrefix("#") ? text.uppercased() : "#" + text.uppercased()
+            }
+            snippet.icon = try string("icon").flatMap { $0.isEmpty ? nil : $0 }
+            if let text = try string("icon_corner") {
+                guard let corner = SnippetCorner(rawValue: text) else {
+                    throw SnippadParseError(line: fields["icon_corner"]!.line,
+                                            message: "'icon_corner' must be \"top-left\", \"top-right\", \"bottom-left\" or \"bottom-right\"")
+                }
+                snippet.iconCorner = corner
+            }
+            func integer(_ key: String, minimum: Int) throws -> Int? {
+                guard let field = fields[key] else { return nil }
+                guard case .integer(let n) = field.value, n >= minimum else {
+                    throw SnippadParseError(line: field.line, message: "'\(key)' must be a whole number, at least \(minimum)")
+                }
+                return n
+            }
+            let x = try integer("x", minimum: 0), y = try integer("y", minimum: 0)
+            if (x == nil) != (y == nil) {
+                throw SnippadParseError(line: table.line, message: "a snippet's position needs both 'x' and 'y'")
+            }
+            if let x, let y { snippet.origin = SnippetPoint(x: x, y: y) }
+            let width = try integer("width", minimum: SnippetSize.minimum.width)
+            let height = try integer("height", minimum: SnippetSize.minimum.height)
+            if (width == nil) != (height == nil) {
+                throw SnippadParseError(line: table.line, message: "a snippet's size needs both 'width' and 'height'")
+            }
+            if let width, let height { snippet.size = SnippetSize(width: width, height: height) }
             for key in ["once", "password"] {
                 guard let field = fields[key] else { continue }
                 guard case .bool(let b) = field.value else {

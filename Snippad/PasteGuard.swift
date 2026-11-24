@@ -329,10 +329,27 @@ enum PasteInterceptor {
         }
     }
 
+    /// Paste after choosing, when it is on: pastes into the app in front, or
+    /// -- lacking the Accessibility permission -- says that the value is on
+    /// the clipboard but could not be pasted, instead of doing nothing.
+    static func pasteIfWanted(activating target: NSRunningApplication? = nil) {
+        guard SettingsStore.shared.value.pasteAfterChoosing else { return }
+        guard isTrusted else {
+            PasteNotice.show("Press ⌘V to paste it. To paste for you, this copy of Snippad needs the Accessibility permission (menu bar menu › Allow Accessibility).",
+                             prefix: "On the clipboard.")
+            return
+        }
+        target?.activate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            pasteIntoFrontApp()
+        }
+    }
+
     /// Paste After Choosing: the same check as a typed ⌘V, then the ⌘V.
     static func pasteIntoFrontApp() {
         if handle() {
             sendCommandV()
+            SnippadSound.pasted()
         }
     }
 
@@ -364,9 +381,13 @@ private func pasteTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: 
     guard PasteInterceptor.isPaste(keyCode: keyCode, flags: event.flags, characters: characters) else {
         return Unmanaged.passUnretained(event)
     }
-    // ⇧⌘V is Snippad's own shortcut for its entry window, not a paste.
-    if event.flags.contains(.maskShift), !event.flags.contains(.maskAlternate),
-       MainActor.assumeIsolated({ SettingsStore.shared.value.pickerHotKeyEnabled }) {
+    // ⇧⌘V is Snippad's picker window, while that is its shortcut, not a
+    // paste.
+    if event.flags.contains(.maskShift), !event.flags.contains(.maskAlternate), !event.flags.contains(.maskControl),
+       MainActor.assumeIsolated({
+           let v = SettingsStore.shared.value
+           return v.pickerHotKeyEnabled && v.pickerShortcut == KeyShortcut(key: "v", shift: true, command: true)
+       }) {
         return Unmanaged.passUnretained(event)
     }
     // The tap's run loop source is on the main run loop.

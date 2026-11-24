@@ -10,6 +10,11 @@ extension NSPasteboard.PasteboardType {
     /// Set on everything Snippad puts on the clipboard, so its history knows
     /// the change was its own.
     static let snippadSource = NSPasteboard.PasteboardType("dev.verhas.snippad.source")
+    /// Set by macOS on what came through Universal Clipboard from another
+    /// device.
+    static let remoteClipboard = NSPasteboard.PasteboardType("com.apple.is-remote-clipboard")
+    /// What iPhone and iPad apps put on the clipboard.
+    static let uikitAttributedString = NSPasteboard.PasteboardType("com.apple.uikit.attributedstring")
 }
 
 /// What happens to a value after it is on the clipboard.
@@ -97,7 +102,9 @@ extension Snippet {
 final class PasteEngine {
     static let shared = PasteEngine()
 
-    var pasteboard = NSPasteboard.general
+    /// In the unit tests a pasteboard of their own, so they never change
+    /// the user's clipboard.
+    var pasteboard = SnippadHome.isTesting ? NSPasteboard(name: .init("SnippadTests-\(UUID().uuidString)")) : NSPasteboard.general
 
     /// What Snippad last put on the clipboard and that is still there, for
     /// the status menu.
@@ -153,6 +160,7 @@ final class PasteEngine {
         entry.listID = rules.list
         recorder?(entry)
         onStateChange?()
+        SnippadSound.copied()
 
         if let seconds = rules.expires {
             expiryTask = Task { [weak self] in
@@ -181,6 +189,7 @@ final class PasteEngine {
         ownChangeCount = pasteboard.changeCount
         current = (name, PasteRules(password: concealed))
         onStateChange?()
+        SnippadSound.copied()
     }
 
     /// Empties the clipboard, whatever is on it.

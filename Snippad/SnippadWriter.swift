@@ -34,6 +34,29 @@ enum SnippadWriter {
             if let list = snippet.list {
                 out += "list = \(quoted(list))\n"
             }
+            if let shortcut = snippet.shortcut {
+                out += "shortcut = \(quoted(shortcut))\n"
+            }
+            if let color = snippet.color {
+                out += "color = \(quoted(color))\n"
+            }
+            if let icon = snippet.icon {
+                out += "icon = \(quoted(icon))\n"
+                if snippet.iconCorner != .topTrailing {
+                    out += "icon_corner = \(quoted(snippet.iconCorner.rawValue))\n"
+                }
+            }
+            if let origin = snippet.origin {
+                out += "x = \(origin.x)\ny = \(origin.y)\n"
+            }
+            if let size = snippet.size {
+                out += "width = \(size.width)\nheight = \(size.height)\n"
+            }
+            // The original image and what was added to it, so the edits stay
+            // changeable; the value above is the result.
+            if snippet.kind == .image, let edits = snippet.edits {
+                out += "edits = \(quoted(edits.json))\n"
+            }
         }
         return out
     }

@@ -19,7 +19,8 @@ extension UTType {
 /// a file as something the app owns: it puts Rename, Move To, Duplicate and
 /// Locked into the title bar and the File menu, and when a file is opened a
 /// second time it brings the existing window forward without reading the
-/// file again. The board windows only read. Every open -- from Finder,
+/// file again. The board windows read, and write only the places, sizes
+/// and icon corners of their buttons, through the file's editor. Every open -- from Finder,
 /// File > Open, Open Recent or the menu bar -- reads the file from disk, also
 /// when its window is already showing. Only the editor in the history window
 /// (SnippadEditorModel) writes.
@@ -35,6 +36,8 @@ final class SnippadLibrary {
 
     @ObservationIgnored private var windows: [URL: SnippadWindowController] = [:]
     @ObservationIgnored private var models: [URL: SnippadEditorModel] = [:]
+    /// Where the open windows draw each button, by file and snippet name.
+    @ObservationIgnored var shownFrames: [URL: [String: CGRect]] = [:]
 
     /// The open files: those in ~/.snippad by name, then the others.
     private(set) var files: [URL] = []
@@ -69,10 +72,15 @@ final class SnippadLibrary {
             .filter { $0.pathExtension == "snippad" }
             .map(Self.key)
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending } ?? []
-        let others = SettingsStore.shared.value.openSnippadFiles
+        // Files that are gone are dropped from the settings too.
+        let remembered = SettingsStore.shared.value.openSnippadFiles
+        let existing = remembered.filter { fm.fileExists(atPath: $0) }
+        if existing != remembered { SettingsStore.shared.value.openSnippadFiles = existing }
+        let others = existing
             .map { Self.key(URL(fileURLWithPath: $0)) }
-            .filter { !isHome($0) && fm.fileExists(atPath: $0.path) }
+            .filter { !isHome($0) }
         files = home + others.filter { !home.contains($0) }
+        SnippetShortcuts.refresh()
     }
 
     /// Puts a file into the sidebar.
@@ -118,7 +126,7 @@ final class SnippadLibrary {
         }
         try FileManager.default.createDirectory(at: Self.home, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        try SnippadWriter.save([Snippet(id: 0, name: "New snippet", value: "")], to: url)
+        try SnippadWriter.save([Snippet(id: 0, name: "New snippet", value: "", color: SnippetColors.random())], to: url)
         add(url)
         return Self.key(url)
     }
@@ -135,6 +143,7 @@ final class SnippadLibrary {
     /// After something else wrote the file: the editor shows the new
     /// contents unless it has changes of its own not yet saved.
     func reloadModel(_ url: URL) {
+        SnippetShortcuts.refresh()
         guard let m = models[Self.key(url)], !m.isDirty else { return }
         m.load()
     }
@@ -155,8 +164,10 @@ final class SnippadLibrary {
             }
         case .image:
             guard let png = item.pngData else { throw ClipboardError("The image cannot be read.") }
-            added.append(m.append(name: item.label ?? item.title, value: png.base64EncodedString(), password: false,
-                                  list: list, kind: .image))
+            let draft = m.append(name: item.label ?? item.title, value: png.base64EncodedString(), password: false,
+                                 list: list, kind: .image)
+            draft.edits = item.edits
+            added.append(draft)
         case .richText:
             guard let rich = item.attributedString,
                   let rtf = rich.rtf(from: NSRange(location: 0, length: rich.length), documentAttributes: [:]),
@@ -171,6 +182,43 @@ final class SnippadLibrary {
             for d in added { m.remove(d.id) }
             throw ClipboardError(m.problem ?? "The file could not be saved.")
         }
+    }
+
+    /// Copies a snippet into another file, or moves it there (it leaves
+    /// its own file, unless it is the only snippet there). The copy gets a
+    /// name of its own in the target; a copy has no shortcut, which only one
+    /// snippet can have, and a chain only within its file, so neither goes
+    /// along -- except that a moved snippet keeps its shortcut.
+    /// - Returns: whether it was moved, not only copied.
+    @discardableResult
+    func transferSnippet(_ id: UUID, from source: URL, to target: URL, move: Bool) throws -> Bool {
+        guard Self.key(source) != Self.key(target) else { return false }
+        let from = model(for: source), to = model(for: target)
+        guard let d = from.drafts.first(where: { $0.id == id }) else {
+            throw ClipboardError("The snippet is no longer in \u{201C}\(source.lastPathComponent)\u{201D}.")
+        }
+        let moving = move && from.drafts.count > 1
+        let copy = to.append(name: d.name, value: d.value, password: d.password, list: d.list, kind: d.kind)
+        copy.expires = d.expires
+        copy.once = d.once
+        copy.edits = d.edits
+        copy.color = d.color
+        copy.icon = d.icon
+        copy.iconCorner = d.iconCorner
+        // Its place belongs to the other file's window; its size goes along.
+        copy.size = d.size
+        if moving { copy.shortcut = d.shortcut }
+        guard to.save() else {
+            to.remove(copy.id)
+            throw ClipboardError(to.problem ?? "The file could not be saved.")
+        }
+        guard moving else { return false }
+        from.remove(id)
+        guard from.save() else {
+            throw ClipboardError("The snippet was copied, but \u{201C}\(source.lastPathComponent)\u{201D} could not be saved without it: "
+                                 + (from.problem ?? "the file could not be saved."))
+        }
+        return true
     }
 
     private static func name(for item: ClipItem, text: String) -> String {
@@ -199,6 +247,46 @@ final class SnippadLibrary {
         }
         NSDocumentController.shared.noteNewRecentDocumentURL(key)
         recentURLs = NSDocumentController.shared.recentDocumentURLs
+    }
+
+    /// A button moved, resized or given another icon corner in a file's
+    /// window, written to the file through its editor, so the Organizer
+    /// shows it too. Nothing changes when the window no longer shows what
+    /// the file holds (the window is read again), or while the Organizer has
+    /// a change that cannot be saved.
+    func apply(_ change: BoardChange, to url: URL) {
+        let m = model(for: url)
+        m.saveIfNeeded()
+        guard !m.isDirty else {
+            NSSound.beep()
+            reloadIfOpen(url)
+            return
+        }
+        if let file = try? SnippadContent.read(url).get(), (try? m.snippets()) != file { m.load() }
+        func draft(_ index: Int, _ name: String) -> SnippetDraft? {
+            m.drafts.indices.contains(index) && m.drafts[index].name == name ? m.drafts[index] : nil
+        }
+        switch change {
+        case .origin(let index, let name, let origin):
+            guard let d = draft(index, name) else { return reloadIfOpen(url) }
+            d.origin = origin
+        case .size(let index, let name, let size, let origin):
+            guard let d = draft(index, name) else { return reloadIfOpen(url) }
+            d.size = size
+            d.origin = origin
+        case .iconCorner(let index, let name, let corner):
+            guard let d = draft(index, name) else { return reloadIfOpen(url) }
+            d.iconCorner = corner
+        case .arrangeAll:
+            for d in m.drafts {
+                d.origin = nil
+                d.size = nil
+            }
+        }
+        if !m.save() {
+            NSSound.beep()
+            reloadIfOpen(url)
+        }
     }
 
     /// After the editor saved a file, its board shows the new snippets.
@@ -313,7 +401,11 @@ private struct SnippadWindowView: View {
     var body: some View {
         switch content.snippets {
         case .success(let snippets):
-            SnippetBoard(snippets: snippets)
+            SnippetBoard(snippets: snippets) { change in
+                SnippadLibrary.shared.apply(change, to: content.url)
+            } shown: { snippet, frame in
+                SnippadLibrary.shared.shownFrames[content.url, default: [:]][snippet.name] = frame
+            }
         case .failure(let error):
             ContentUnavailableView {
                 Label("Cannot read this file", systemImage: "exclamationmark.triangle")

@@ -35,6 +35,14 @@ struct SnippadApp: App {
                     }
                     .keyboardShortcut("e")
                 }
+                // ⌘Q only closes the Organizer: Snippad keeps recording in
+                // the menu bar. Quitting is in the menu bar menu (and here,
+                // without a shortcut).
+                CommandGroup(replacing: .appTermination) {
+                    Button("Close Snippad Organizer") { HistoryWindow.close() }
+                        .keyboardShortcut("q")
+                    Button("Quit Snippad") { NSApp.terminate(nil) }
+                }
                 CommandGroup(replacing: .appSettings) {
                     Button("Settings…") { SettingsWindow.show() }
                         .keyboardShortcut(",")
@@ -65,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // "Startup"): the menu bar item, the clipboard watch, the MCP socket,
         // and a scan of the installed applications. No keyboard tap: that
         // comes only with a restricted value on the clipboard.
+        guard onlyCopyRunning() else { return }
         AppActivation.startWatchingWindows()
         SettingsStore.shared.onChange = {
             StatusMenu.shared.settingsChanged()
@@ -75,12 +84,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let updateTap = { DispatchQueue.main.async { MainActor.assumeIsolated { PasteInterceptor.update() } } }
         PasteEngine.shared.onStateChange = updateTap
         ClipboardHistory.shared.onCurrentChange = updateTap
+        ClipboardHistory.shared.askForRemoteList = RemoteListPrompt.ask
         StatusMenu.shared.install()
         ClipboardHistory.shared.activate()
         PasteInterceptor.start()
         MCPServer.shared.start()
         SnippadLibrary.shared.restore()
         Task { await AppCatalog.shared.scanInstalled(settings: .shared) }
+    }
+
+    /// Two Snippads would both record every copy, fight over ⌃⌘V, ⇧⌘V and
+    /// the snippets' shortcuts, and over the agents' socket. Asks which one
+    /// stays; false when this one quits.
+    @MainActor private func onlyCopyRunning() -> Bool {
+        guard let id = Bundle.main.bundleIdentifier else { return true }
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: id).filter { $0 != .current }
+        guard let other = others.first else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Snippad is already running"
+        alert.informativeText = "Another copy is running from \(other.bundleURL?.path ?? "elsewhere"). "
+            + "This one is \(Bundle.main.bundlePath).\n\n"
+            + "Two copies would both record every copy and compete for the shortcuts. Which one should keep running?"
+        alert.addButton(withTitle: "Use This One")
+        alert.addButton(withTitle: "Keep the Other One")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            NSApp.terminate(nil)
+            return false
+        }
+        for app in others { app.terminate() }
+        // Give them a moment to let go of the shortcuts and the socket.
+        let deadline = Date().addingTimeInterval(3)
+        while others.contains(where: { !$0.isTerminated }), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

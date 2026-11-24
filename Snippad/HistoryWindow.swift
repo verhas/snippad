@@ -18,6 +18,9 @@ final class HistoryNavigation {
     /// A list whose settings fill the detail pane.
     var editingList: String?
     var selection: Set<UUID> = []
+    /// Asked for from outside (an agent): open the image editor of this
+    /// entry, or of this snippet's draft, once it is shown.
+    var openImageEditor: UUID?
 }
 
 /// The whole clipboard history, by list, searchable, with a preview of the
@@ -58,6 +61,11 @@ enum HistoryWindow {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { configureToolbar() }
     }
 
+    /// ⌘Q: the Organizer closes, Snippad stays in the menu bar.
+    static func close() {
+        controller?.window?.performClose(nil)
+    }
+
     private static var displayModeObservation: NSKeyValueObservation?
 
     /// The toolbar's right-click menu offers Icon and Text, Icon Only and
@@ -68,10 +76,10 @@ enum HistoryWindow {
         let saved = NSToolbar.DisplayMode(rawValue: UInt(max(0, SettingsStore.shared.value.toolbarDisplayMode))) ?? .iconAndLabel
         if toolbar.displayMode != saved { toolbar.displayMode = saved }
         guard displayModeObservation == nil else { return }
+        // The toolbar is changed on the main thread, so its observer runs there.
         displayModeObservation = toolbar.observe(\.displayMode) { toolbar, _ in
-            let mode = Int(toolbar.displayMode.rawValue)
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { SettingsStore.shared.value.toolbarDisplayMode = mode }
+            MainActor.assumeIsolated {
+                SettingsStore.shared.value.toolbarDisplayMode = Int(toolbar.displayMode.rawValue)
             }
         }
     }
@@ -114,6 +122,32 @@ func presentError(_ error: Error, title: String) {
 extension UTType {
     /// History entries dragged inside Snippad; declared in Info.plist.
     static let snippadHistoryItem = UTType(exportedAs: "dev.verhas.snippad.history-item")
+    /// A snippet dragged from a file's snippets onto another file.
+    static let snippadSnippet = UTType(exportedAs: "dev.verhas.snippad.snippet")
+}
+
+/// A snippet being dragged: its file, and which one it is there.
+struct SnippetDrag: Codable {
+    let file: String
+    let id: UUID
+
+    /// For the snippet's row: onto a file in the sidebar, and, with
+    /// `export`, into other apps.
+    func itemProvider(export: DragExport? = nil) -> NSItemProvider {
+        let provider = NSItemProvider()
+        let data = (try? JSONEncoder().encode(self)) ?? Data()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.snippadSnippet.identifier, visibility: .ownProcess) { done in
+            done(data, nil)
+            return nil
+        }
+        if let export {
+            provider.register(ClipDrag(entry: id, history: HistoryDrag(ids: []), export: export))
+            if let name = export.file?.lastPathComponent ?? (export.png != nil ? export.name + ".png" : nil) {
+                provider.suggestedName = name
+            }
+        }
+        return provider
+    }
 }
 
 /// What is dragged when entries are dragged onto a list: every selected
@@ -123,8 +157,11 @@ struct HistoryDrag: Codable, Transferable {
 
     init(ids: [UUID]) { self.ids = ids }
 
+    /// Inside Snippad only. A drag to another app does not keep to it on its
+    /// own -- `ClipDrag` puts this last, so it is never the promised file.
     static var transferRepresentation: some TransferRepresentation {
         CodableRepresentation(contentType: .snippadHistoryItem)
+            .visibility(.ownProcess)
     }
 }
 
@@ -137,6 +174,8 @@ private struct HistoryView: View {
     @State private var confirmClear = false
     @State private var dropTarget: String?
     @State private var deletingList: String?
+    /// Only entries of this kind; nil shows all.
+    @State private var kindFilter: ClipItem.Kind?
 
     private var listFilter: String? {
         if case .list(let id) = nav.sidebar { return id }
@@ -144,7 +183,7 @@ private struct HistoryView: View {
     }
 
     private var shown: [ClipItem] {
-        let found = history.search(query, list: listFilter)
+        let found = history.search(query, list: listFilter).filter { kindFilter == nil || $0.kind == kindFilter }
         return found.filter(\.pinned) + found.filter { !$0.pinned }
     }
 
@@ -177,6 +216,10 @@ private struct HistoryView: View {
                           systemImage: history.isCapturing ? "record.circle" : "pause.circle")
                 }
                 .help(history.isCapturing ? "New copies are recorded. Click to pause." : "Recording is paused. Click to record new copies.")
+                if !isFile, let batch = history.undoableDelete {
+                    Button("Undo Delete", systemImage: "arrow.uturn.backward") { undoDelete() }
+                        .help("Bring back the \(batch.items.count == 1 ? "entry" : "\(batch.items.count) entries") deleted last (⌘Z in the list). Deletions can be undone for five minutes.")
+                }
                 if !isFile {
                     Button("Clear Unpinned…", systemImage: "trash.slash") { confirmClear = true }
                         .help("Delete every entry that is not pinned\(listFilter.map { " from \u{201C}\(settings.list($0).name)\u{201D}" } ?? "")")
@@ -186,7 +229,7 @@ private struct HistoryView: View {
         .confirmationDialog(clearTitle, isPresented: $confirmClear) {
             Button("Delete Unpinned Entries", role: .destructive) { history.clear(list: listFilter) }
         } message: {
-            Text("Pinned entries stay. This cannot be undone.")
+            Text("Pinned entries stay. Undo Delete brings the others back, for five minutes.")
         }
         .sheet(item: Binding(get: { deletingList.map(ListRef.init) }, set: { deletingList = $0?.id })) { ref in
             DeleteListSheet(listID: ref.id) { moveTo in
@@ -195,7 +238,7 @@ private struct HistoryView: View {
                 if nav.editingList == ref.id { nav.editingList = nil }
             }
         }
-        .onChange(of: nav.sidebar) { query = "" }
+        .onChange(of: nav.sidebar) { query = ""; kindFilter = nil }
         .onChange(of: nav.selection) { if !nav.selection.isEmpty { nav.editingList = nil } }
         .onAppear { library.refreshFiles() }
         .frame(minWidth: 900, minHeight: 400)
@@ -252,7 +295,9 @@ private struct HistoryView: View {
     private func listRow(_ list: ClipList) -> some View {
         sidebarRow(list.name, symbol: list.symbol, count: history.items.filter { $0.list == list.id }.count,
                    preferred: settings.value.preferredList == list.id, restricted: list.isRestricted,
-                   privateWindows: settings.value.privateBrowsingList == list.id)
+                   privateWindows: settings.value.privateBrowsingList == list.id,
+                   otherDevices: settings.value.remoteList == list.id,
+                   screenshots: (settings.value.screenshotList ?? ClipList.defaultID) == list.id)
             .tag(SidebarItem.list(list.id))
             .listRowBackground(dropTarget == list.id ? Color.accentColor.opacity(0.25) : nil)
             .dropDestination(for: HistoryDrag.self) { drags, _ in
@@ -262,7 +307,6 @@ private struct HistoryView: View {
             } isTargeted: { over in
                 dropTarget = over ? list.id : (dropTarget == list.id ? nil : dropTarget)
             }
-            .help(list.isRestricted ? "Has Paste Guard rules. Drop entries here to move them." : "Drop entries here to move them")
             .contextMenu {
                 Button("Edit List…") {
                     nav.sidebar = .list(list.id)
@@ -280,9 +324,10 @@ private struct HistoryView: View {
     }
 
     private func fileRow(_ url: URL) -> some View {
-        HStack {
+        let key = "file:" + url.path
+        return HStack {
             Label(url.deletingPathExtension().lastPathComponent, systemImage: "doc.text")
-                .help(url.path)
+                .help("\(url.path)\nDrop history entries here to add them as snippets.")
             Spacer()
             if !library.isHome(url) {
                 Button("Close", systemImage: "eject") { close(url) }
@@ -292,7 +337,20 @@ private struct HistoryView: View {
             }
         }
         .tag(SidebarItem.file(url))
+        .listRowBackground(dropTarget == key ? Color.accentColor.opacity(0.25) : nil)
+        // History entries dropped here become snippets, as Add to Snippad
+        // makes them; the entries stay in the history. A snippet from
+        // another file is copied here, or moved with ⌘ held.
+        .onDrop(of: [.snippadHistoryItem, .snippadSnippet], isTargeted: Binding(
+            get: { dropTarget == key },
+            set: { over in dropTarget = over ? key : (dropTarget == key ? nil : dropTarget) })) { providers in
+            drop(providers, on: url)
+        }
         .contextMenu {
+            Button("New Snippet") {
+                nav.sidebar = .file(url)
+                library.model(for: url).add()
+            }
             Button("Open Window") { library.open(url) }
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
             if !library.isHome(url) {
@@ -303,10 +361,11 @@ private struct HistoryView: View {
     }
 
     private func sidebarRow(_ name: String, symbol: String, count: Int, preferred: Bool, restricted: Bool = false,
-                            privateWindows: Bool = false) -> some View {
+                            privateWindows: Bool = false, otherDevices: Bool = false, screenshots: Bool = false) -> some View {
         HStack {
             Label {
                 Text(name).fontWeight(preferred ? .semibold : .regular)
+                    .help("\(name): \(count) entries. Drop entries here to move them.")
             } icon: {
                 Image(systemName: symbol)
             }
@@ -318,10 +377,18 @@ private struct HistoryView: View {
                 Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
                     .help("Copies made in private browser windows go to this list")
             }
+            if screenshots {
+                Image(systemName: "camera.viewfinder").font(.caption2).foregroundStyle(.secondary)
+                    .help("Screenshots go to this list")
+            }
+            if otherDevices {
+                Image(systemName: "laptopcomputer.and.iphone").font(.caption2).foregroundStyle(.secondary)
+                    .help("Copies from iPhone, iPad and other Macs (Universal Clipboard) go to this list")
+            }
             Spacer()
             if preferred {
                 Image(systemName: "star.fill").font(.caption).foregroundStyle(.green)
-                    .help("The preferred list: shown by ⇧⌘V")
+                    .help("The preferred list: shown by the picker (⇧⌘V unless changed in Settings)")
             }
             Text("\(count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
         }
@@ -331,6 +398,56 @@ private struct HistoryView: View {
         let list = settings.addList(named: "New List")
         nav.sidebar = .list(list.id)
         nav.editingList = list.id
+    }
+
+    /// History entries or snippets dropped on a file. Every item is read
+    /// first, so entries dragged together are added once, in their order.
+    private func drop(_ providers: [NSItemProvider], on url: URL) -> Bool {
+        let move = NSEvent.modifierFlags.contains(.command)
+        let snippets = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.snippadSnippet.identifier) }
+        let entries = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.snippadHistoryItem.identifier) }
+        guard !snippets.isEmpty || !entries.isEmpty else { return false }
+        Task { @MainActor in
+            var ids: [UUID] = []
+            for provider in entries {
+                if let drag: HistoryDrag = await Self.load(provider, .snippadHistoryItem) { ids += drag.ids }
+            }
+            if !ids.isEmpty { _ = addSnippets(ids, to: url) }
+            for provider in snippets {
+                guard let drag: SnippetDrag = await Self.load(provider, .snippadSnippet) else { continue }
+                do {
+                    try library.transferSnippet(drag.id, from: URL(fileURLWithPath: drag.file), to: url, move: move)
+                } catch {
+                    presentError(error, title: move ? "The snippet could not be moved" : "The snippet could not be copied")
+                }
+            }
+        }
+        return true
+    }
+
+    /// What was dropped, read from its item.
+    private static func load<T: Decodable>(_ provider: NSItemProvider, _ type: UTType) async -> T? {
+        let data: Data? = await withCheckedContinuation { done in
+            _ = provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in done.resume(returning: data) }
+        }
+        return data.flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+    }
+
+    /// Adds the entries that can be snippets to a file, in the order they
+    /// are shown; false when none can.
+    private func addSnippets(_ ids: [UUID], to url: URL) -> Bool {
+        let wanted = Set(ids)
+        let items = shown.filter { wanted.contains($0.id) && $0.canBecomeSnippet }
+        guard !items.isEmpty else { return false }
+        for item in items {
+            do {
+                try library.addSnippet(from: item, to: url)
+            } catch {
+                presentError(error, title: "\u{201C}\(item.title)\u{201D} could not be added as a snippet")
+                return true
+            }
+        }
+        return true
     }
 
     private func close(_ url: URL) {
@@ -345,10 +462,15 @@ private struct HistoryView: View {
             HistoryRow(item: item, listName: listFilter == nil && settings.value.lists.count > 1
                        ? settings.list(item.list).name : nil)
                 .tag(item.id)
-                .draggable(drag(for: item.id)) {
+                // Onto a list or a file in the sidebar, or into another app.
+                .historyDragSource(item.id, payload: { singleDrag(for: item) }) {
                     let count = nav.selection.contains(item.id) ? max(selectedItems.count, 1) : 1
                     Label(count > 1 ? "\(count) entries" : item.title, systemImage: "doc.on.clipboard").padding(6)
                 }
+        }
+        .historyDragContainer(selected: { selectedItems.map(\.id) }) { ids in
+            let wanted = Set(ids)
+            return shown.filter { wanted.contains($0.id) }.flatMap { ClipDrag.items(for: $0) }
         }
         .contextMenu(forSelectionType: UUID.self) { ids in
             ItemsActions(ids: ids, select: { nav.selection = [$0] })
@@ -356,11 +478,43 @@ private struct HistoryView: View {
             if ids.count == 1, let id = ids.first { history.copy(id) }
         }
         .searchable(text: $query, prompt: "Search text, files, EXIF")
+        .safeAreaInset(edge: .top, spacing: 0) {
+            KindFilterBar(kind: $kindFilter,
+                          present: Set(history.search(query, list: listFilter).map(\.kind)))
+        }
         .onKeyPress(.return) {
-            if selectedItems.count == 1 { history.copy(selectedItems[0].id) }
+            copySelection()
+            return .handled
+        }
+        .onKeyPress(keys: ["z"]) { press in
+            guard press.modifiers == .command, history.undoableDelete != nil else { return .ignored }
+            undoDelete()
             return .handled
         }
         .onDeleteCommand { delete(Set(selectedItems.map(\.id))) }
+    }
+
+    /// Return: one entry back on the clipboard; several as one, joined.
+    private func copySelection() {
+        let items = selectedItems
+        if items.count == 1 {
+            history.copy(items[0].id)
+        } else if items.count > 1 {
+            copyTogether(items.map(\.id))
+        }
+    }
+
+    private func undoDelete() {
+        let back = history.undoDelete()
+        if !back.isEmpty { nav.selection = Set(back.map(\.id)) }
+    }
+
+    /// Before macOS 26 a drag is one item: inside Snippad every selected
+    /// entry; outside, only the one dragged, when it is the only one.
+    private func singleDrag(for item: ClipItem) -> ClipDrag {
+        let history = drag(for: item.id)
+        let export = history.ids.count == 1 ? DragExport.exports(for: item).first : nil
+        return ClipDrag(entry: item.id, history: history, export: export)
     }
 
     private func drag(for id: UUID) -> HistoryDrag {
@@ -393,7 +547,7 @@ private struct HistoryView: View {
         } else {
             ContentUnavailableView(history.items.isEmpty ? "Nothing copied yet" : "No selection",
                                    systemImage: "list.clipboard",
-                                   description: Text("Select entries with ⌘-click or ⇧-click, and drag them onto a list on the left to move them there."))
+                                   description: Text("Select entries with ⌘-click or ⇧-click, and drag them onto a list on the left to move them there, or onto a Snippad file to add them as snippets."))
         }
     }
 
@@ -408,7 +562,7 @@ private struct HistoryView: View {
         let after = list.drop { !ids.contains($0.id) }.first { !ids.contains($0.id) }
         let before = list.last { !ids.contains($0.id) && (list.firstIndex(of: $0) ?? 0) < (list.firstIndex { ids.contains($0.id) } ?? 0) }
         nav.selection = (after ?? before).map { [$0.id] } ?? []
-        for id in ids { history.delete(id) }
+        history.delete(undoably: ids)
     }
 }
 
@@ -469,6 +623,9 @@ private struct MultipleDetail: View {
             Text("\(items.count) entries selected").font(.title3)
             Text("Drag them onto a list in the sidebar to move them all.").foregroundStyle(.secondary)
             HStack {
+                Button("Copy Together") { copyTogether(items.map(\.id)) }
+                    .help("Put their texts on the clipboard as one, in this order, a line break between them (Return)")
+                    .disabled(!items.contains { $0.isEditableText })
                 Menu("Move to List") {
                     ForEach(SettingsStore.shared.value.lists) { list in
                         Button(list.name) { for item in items { history.move(item.id, toList: list.id) } }
@@ -504,10 +661,14 @@ private struct ItemsActions: View {
                     Button(list.name) { for item in items { history.move(item.id, toList: list.id) } }
                 }
             }
+            Button("Copy \(items.count) Entries Together") {
+                copyTogether(history.items.filter { ids.contains($0.id) }.map(\.id))
+            }
+            .disabled(!items.contains { $0.isEditableText })
             Button("Pin \(items.count) Entries") { for item in items { history.setPinned(item.id, true) } }
             Button("Unpin \(items.count) Entries") { for item in items { history.setPinned(item.id, false) } }
             Divider()
-            Button("Delete \(items.count) Entries", role: .destructive) { for item in items { history.delete(item.id) } }
+            Button("Delete \(items.count) Entries", role: .destructive) { history.delete(undoably: items.map(\.id)) }
         }
     }
 }
@@ -520,13 +681,17 @@ private struct ItemActions: View {
 
     var body: some View {
         Button("Put on Clipboard") { history.copy(item.id) }.disabled(item.filesGone)
+        if item.kind == .richText && !item.isPassword {
+            Button("Copy as Markdown") { history.put(item.id, as: .markdown) }
+        }
+        Button("Rename\u{2026}") { renameEntry(item) }
         Button(item.pinned ? "Unpin" : "Pin") { history.setPinned(item.id, !item.pinned) }
         MoveToListMenu(item: item)
         if item.kind == .files {
             Button("Copy File Contents") { copyContents(of: item.fileURLs, from: item, select: select) }
                 .disabled(item.filesGone)
-            Button("Copy Names as Text") { try? history.copyFileText(of: item.id, .names) }
-            Button("Copy Paths as Text") { try? history.copyFileText(of: item.id, .paths) }
+            Button("Copy Names as Text") { copyFileText(of: item.id, .names) }
+            Button("Copy Paths as Text") { copyFileText(of: item.id, .paths) }
             Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(item.fileURLs) }
                 .disabled(item.filesGone)
         }
@@ -537,7 +702,87 @@ private struct ItemActions: View {
             AddToSnippadMenu(item: item)
         }
         Divider()
-        Button("Delete", role: .destructive) { history.delete(item.id) }
+        Button("Delete", role: .destructive) { history.delete(undoably: [item.id]) }
+    }
+}
+
+/// Several entries' texts on the clipboard as one, reporting why not.
+@MainActor
+func copyTogether(_ ids: [UUID]) {
+    do {
+        try ClipboardHistory.shared.copyJoined(ids)
+    } catch {
+        presentError(error, title: "The entries could not be joined")
+    }
+}
+
+/// Asks for an entry's name; an empty one shows its contents again.
+@MainActor
+func renameEntry(_ item: ClipItem) {
+    let alert = NSAlert()
+    alert.messageText = "Rename Entry"
+    alert.informativeText = "The name is shown instead of the entry\u{2019}s first line, and is searched. Leave it empty to show the contents again."
+    let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+    field.stringValue = item.name ?? ""
+    field.placeholderString = item.isPassword ? "Name" : String(item.title.prefix(60))
+    alert.accessoryView = field
+    alert.addButton(withTitle: "Rename")
+    alert.addButton(withTitle: "Cancel")
+    alert.window.initialFirstResponder = field
+    NSApp.activate()
+    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    ClipboardHistory.shared.rename(item.id, to: field.stringValue)
+}
+
+/// One click narrows the entries to a kind: text, rich text, links,
+/// images, files or colours. ⇧⌘F goes through the kinds that are there.
+private struct KindFilterBar: View {
+    @Binding var kind: ClipItem.Kind?
+    /// The kinds among the entries, before this filter.
+    let present: Set<ClipItem.Kind>
+
+    static let kinds: [(ClipItem.Kind, String, String)] = [
+        (.text, "Text", "text.alignleft"), (.richText, "Rich Text", "doc.richtext"), (.url, "Links", "link"),
+        (.image, "Images", "photo"), (.files, "Files", "doc.on.doc"), (.color, "Colours", "paintpalette"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 4) {
+            chip(nil, "All", "tray.full")
+            ForEach(Self.kinds, id: \.0) { k in chip(k.0, k.1, k.2) }
+            Spacer(minLength: 0)
+            // ⇧⌘F, without a visible button.
+            Button("Next Kind", action: cycle)
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.bar)
+    }
+
+    private func chip(_ k: ClipItem.Kind?, _ title: String, _ symbol: String) -> some View {
+        let on = kind == k
+        return Button {
+            kind = on ? nil : k
+        } label: {
+            Image(systemName: symbol)
+                .frame(width: 22, height: 18)
+                .foregroundStyle(on ? Color.white : .primary)
+                .background(on ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.borderless)
+        .disabled(k.map { !present.contains($0) } ?? false)
+        .help(k == nil ? "All kinds" : "Only \(title.lowercased()) (⇧⌘F goes through the kinds)")
+    }
+
+    /// All, then each kind that is there, then All again.
+    private func cycle() {
+        let order: [ClipItem.Kind?] = [nil] + Self.kinds.map(\.0).filter(present.contains)
+        let i = order.firstIndex { $0 == kind } ?? 0
+        kind = order[(i + 1) % order.count]
     }
 }
 
@@ -560,6 +805,16 @@ private struct AddToSnippadMenu: View {
                 Text("No .snippad file is open")
             }
         }
+    }
+}
+
+/// Copy Names / Paths as Text, reporting what goes wrong.
+@MainActor
+func copyFileText(of id: UUID, _ what: ClipboardHistory.FileText) {
+    do {
+        try ClipboardHistory.shared.copyFileText(of: id, what)
+    } catch {
+        presentError(error, title: "The file names could not be copied")
     }
 }
 
@@ -692,7 +947,17 @@ private struct HistoryDetail: View {
         }
         .labelStyle(.titleAndIcon)
         .toolbar { toolbar }
-        .onAppear { chosenFiles = Set(item.fileURLs).subtracting(item.missingFiles) }
+        .onAppear {
+            chosenFiles = Set(item.fileURLs).subtracting(item.missingFiles)
+            openEditorIfAsked()
+        }
+        .onChange(of: HistoryNavigation.shared.openImageEditor) { openEditorIfAsked() }
+    }
+
+    private func openEditorIfAsked() {
+        guard HistoryNavigation.shared.openImageEditor == item.id else { return }
+        HistoryNavigation.shared.openImageEditor = nil
+        if item.kind == .image && !item.isPassword { editing = true }
     }
 
     @ViewBuilder private var content: some View {
@@ -706,6 +971,11 @@ private struct HistoryDetail: View {
                 Text("A password. It shows only while you edit it: click Edit in the toolbar.")
             }
         } else if item.isEditableText {
+            VStack(spacing: 0) {
+                if editing && item.kind == .richText {
+                    RichTextBar(editor: editor)
+                    Divider()
+                }
             TextEditorView(documentID: item.id, text: item.string ?? "",
                            rich: item.kind == .richText ? item.attributedString : nil,
                            editable: editing, lineNumbers: lineNumbers, wrap: settings.value.wordWrap, controller: editor,
@@ -715,10 +985,15 @@ private struct HistoryDetail: View {
                            concealCopies: item.isPassword) { plain, rich in
                 history.updateText(item.id, plain: plain, rich: rich)
             }
+            }
         } else {
             switch item.kind {
             case .image:
-                if let image = item.image {
+                if editing, let edits = item.edits ?? item.pngData.map({ ImageEdits(original: $0) }) {
+                    ImageEditorHost(edits: edits, target: .history(item.id)) { edits, png in
+                        history.updateImage(item.id, png: png, edits: edits)
+                    }
+                } else if let image = item.image {
                     Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding()
@@ -785,6 +1060,13 @@ private struct HistoryDetail: View {
             Button("Put on Clipboard", systemImage: "arrow.up.doc.on.clipboard") { history.copy(item.id) }
                 .disabled(item.filesGone)
                 .help("Put this whole entry back on the clipboard (Return). To copy part of a text, select it and press ⌘C.")
+            if item.kind == .image && !item.isPassword && item.pending != true {
+                Toggle(isOn: $editing) {
+                    Label(editing ? "Editing" : "Edit", systemImage: editing ? "pencil.circle.fill" : "pencil.circle")
+                }
+                .help(editing ? "Every change is kept as you make it. Click to stop editing."
+                      : "Draw, write, paste, select areas to delete, invert, make black & white or pixelate, and crop. The original image is kept, and everything added stays editable.")
+            }
             if item.isEditableText {
                 Toggle(isOn: $editing) {
                     Label(editing ? "Editing" : "Edit", systemImage: editing ? "pencil.circle.fill" : "pencil.circle")
@@ -795,7 +1077,15 @@ private struct HistoryDetail: View {
                       : "The text is read-only. Click to edit it; changes are kept as you type, there is no Save.")
                 if !hidden {
                     TextCommandsMenu(editor: editor, editing: editing,
-                                     convertToPlainText: item.kind == .richText ? { history.convertToPlainText(item.id) } : nil)
+                                     convertToPlainText: item.kind == .richText ? { history.convertToPlainText(item.id) } : nil,
+                                     makeRichText: item.kind != .richText && !item.isPassword ? {
+                                         history.makeRichText(item.id)
+                                         editing = true
+                                     } : nil)
+                    if item.kind == .richText {
+                        Button("Copy as Markdown", systemImage: "number") { history.put(item.id, as: .markdown) }
+                            .help("Put the formatted text on the clipboard as Markdown: headings, bold, italic, lists and links")
+                    }
                     Button("Export…", systemImage: "square.and.arrow.up") { export() }
                         .help("Save the text to a file")
                 }
@@ -821,13 +1111,15 @@ private struct HistoryDetail: View {
                 .disabled(chosenFiles.isEmpty)
                 .help("Put what the checked files contain on the clipboard, as text or image; one new entry per file")
                 Menu {
-                    Button("Copy Names as Text") { try? history.copyFileText(of: item.id, .names) }
-                    Button("Copy Paths as Text") { try? history.copyFileText(of: item.id, .paths) }
+                    Button("Copy Names as Text") { copyFileText(of: item.id, .names) }
+                    Button("Copy Paths as Text") { copyFileText(of: item.id, .paths) }
                 } label: {
                     Label("Copy as Text", systemImage: "doc.plaintext")
                 }
                 .help("Put the files' names, or their full paths, on the clipboard as text, one per line. Works even when the files are gone.")
             }
+            Button("Rename", systemImage: "character.cursor.ibeam") { renameEntry(item) }
+                .help(item.name == nil ? "Give this entry a name, shown instead of its first line" : "Change or remove the entry\u{2019}s name, \u{201C}\(item.name ?? "")\u{201D}")
             Button(item.pinned ? "Unpin" : "Pin", systemImage: item.pinned ? "pin.slash" : "pin") {
                 history.setPinned(item.id, !item.pinned)
             }
@@ -848,7 +1140,10 @@ private struct HistoryDetail: View {
         if let app = item.sourceApp { parts.append("from \(app)") }
         if let edited = item.edited { parts.append("edited \(edited.formatted(.relative(presentation: .named)))") }
         parts.append(ByteCountFormatter.string(fromByteCount: Int64(item.byteCount), countStyle: .file))
-        if let s = item.string, !hidden { parts.append("\(s.count) characters, \(s.split(separator: "\n", omittingEmptySubsequences: false).count) lines") }
+        if let edits = item.edits, !edits.isUnchanged {
+            parts.append("edited image: \(edits.layers.count) object\(edits.layers.count == 1 ? "" : "s") added\(edits.crop != nil ? ", cropped" : ""), original kept")
+        }
+                if let s = item.string, !hidden { parts.append("\(s.count) characters, \(s.split(separator: "\n", omittingEmptySubsequences: false).count) lines") }
         parts.append(item.types.joined(separator: ", "))
         return parts.joined(separator: " · ")
     }

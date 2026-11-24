@@ -8,9 +8,8 @@ import SwiftUI
 enum SettingsWindow {
     private static var controller: NSWindowController?
 
-    static func show(tab: SettingsTab = .general, appsOfList: String? = nil) {
+    static func show(tab: SettingsTab = .general) {
         SettingsModel.shared.tab = tab
-        SettingsModel.shared.appsOfList = appsOfList
         if controller == nil {
             let hosting = NSHostingController(rootView: SettingsView())
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 520),
@@ -35,8 +34,6 @@ enum SettingsTab: Hashable { case general, applications, pasteGuard }
 final class SettingsModel {
     static let shared = SettingsModel()
     var tab: SettingsTab = .general
-    /// Settings > Applications shows only the apps whose copies go here.
-    var appsOfList: String?
 }
 
 private struct SettingsView: View {
@@ -65,6 +62,14 @@ private struct SystemState {
 private struct GeneralTab: View {
     @State private var store = SettingsStore.shared
     @State private var system = SystemState()
+    @State private var usage = ClipboardHistory.shared.diskUsageText
+    /// An age limit that would delete entries, waiting to be confirmed.
+    @State private var pendingAge: (days: Int, count: Int)?
+
+    static let ages: [(days: Int, title: String)] = [
+        (0, "Never"), (1, "1 day"), (7, "1 week"), (14, "2 weeks"), (30, "1 month"), (60, "2 months"),
+        (90, "3 months"), (180, "6 months"), (365, "1 year"),
+    ]
 
     var body: some View {
         Form {
@@ -92,11 +97,85 @@ private struct GeneralTab: View {
                 Picker("Keep per list", selection: $store.value.historyLimit) {
                     ForEach([50, 100, 200, 500, 1000, 5000], id: \.self) { Text("\($0) unpinned entries").tag($0) }
                 }
-                Toggle("Open the history menu with ⌃⌘V", isOn: $store.value.hotKeyEnabled)
-                Toggle("Open the preferred list\u{2019}s entries with ⇧⌘V", isOn: $store.value.pickerHotKeyEnabled)
-                Text("⇧⌘V is Paste and Match Style in many apps, and other clipboard managers use it too; while this is on, Snippad takes it everywhere. Switch it off if it gets in the way.")
+                Picker("Delete unpinned entries older than", selection: Binding(
+                    get: { store.value.historyMaxAgeDays },
+                    set: { days in
+                        let count = ClipboardHistory.shared.countOlder(thanDays: days)
+                        if count > 0 && (days < store.value.historyMaxAgeDays || store.value.historyMaxAgeDays == 0) {
+                            pendingAge = (days, count)
+                        } else {
+                            ClipboardHistory.shared.maxAgeDays = days
+                        }
+                    })) {
+                    ForEach(Self.ages, id: \.days) { Text($0.title).tag($0.days) }
+                }
+                LabeledContent("On disk") {
+                    HStack {
+                        Text(usage)
+                        Button("Show in Finder") {
+                            reveal(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                                .appendingPathComponent("Snippad/History", isDirectory: true))
+                        }
+                    }
+                }
+                Text("Both limits apply to each list. Pinned entries are kept, however many and however old. Deleted entries can be brought back for five minutes with Undo Delete.")
                     .font(.callout).foregroundStyle(.secondary)
-                Toggle("Paste after choosing an entry from the menu or the ⇧⌘V window", isOn: $store.value.pasteAfterChoosing)
+                Toggle("Paste after choosing an entry from the menu or the picker window", isOn: $store.value.pasteAfterChoosing)
+            }
+            Section("Shortcuts") {
+                HotKeyRow(title: "Open the history menu", enabled: $store.value.hotKeyEnabled, keys: $store.value.historyHotKey,
+                          defaultKeys: SnippadSettings.defaultHotKeys.history)
+                HotKeyRow(title: "Open the preferred list\u{2019}s picker", enabled: $store.value.pickerHotKeyEnabled,
+                          keys: $store.value.pickerHotKey, defaultKeys: SnippadSettings.defaultHotKeys.picker)
+                HotKeyRow(title: "Open the Snippad Organizer", enabled: $store.value.organizerHotKeyEnabled,
+                          keys: $store.value.organizerHotKey, defaultKeys: SnippadSettings.defaultHotKeys.organizer)
+                Text("Click a shortcut and press the new keys, with ⌃, ⌥ or ⌘ (a function key may stand alone); Escape cancels. While a shortcut is on, Snippad takes it in every app: ⇧⌘V is Paste and Match Style in many apps, and ⇧⌘H opens the home folder in Finder and Safari. Switch it off, or choose other keys, if it gets in the way.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Sounds") {
+                SoundPicker(title: "When Snippad puts something on the clipboard", name: $store.value.copySound)
+                Toggle("Also when something is copied in another app", isOn: $store.value.copySoundForOtherApps)
+                    .disabled(store.value.copySound.isEmpty)
+                SoundPicker(title: "When Snippad pastes for you", name: $store.value.pasteSound)
+            }
+            Section("Screenshots") {
+                Picker("Delayed screenshots wait", selection: $store.value.screenshotDelay) {
+                    ForEach(Screenshots.delays, id: \.self) { Text("\($0) seconds").tag($0) }
+                }
+                Picker("Screenshots go to the list", selection: $store.value.screenshotList) {
+                    Text(store.value.lists[0].name).tag(String?.none)
+                    ForEach(store.value.lists.dropFirst()) { Text($0.name).tag(Optional($0.id)) }
+                }
+                Text("Take Screenshot is in the menu bar menu. The picture goes on the clipboard and into this list. Snippad needs the Screen Recording permission for it; macOS asks the first time.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Image editor") {
+                Picker("Copied objects go to", selection: Binding(
+                    get: { store.value.imageObjectsRecorded ? (store.value.imageObjectsList ?? ClipList.defaultID) : "" },
+                    set: { id in
+                        store.value.imageObjectsRecorded = !id.isEmpty
+                        store.value.imageObjectsList = id.isEmpty || id == ClipList.defaultID ? nil : id
+                    })) {
+                    ForEach(store.value.lists) { Text($0.name).tag($0.id) }
+                    Divider()
+                    Text("Not kept in the history").tag("")
+                }
+                Text("Shapes, lines, texts, markers and the rest copied in the image editor (⌘C, ⌘X) paste into any image editor, also another image's. On the clipboard they are a picture too, for other apps. A selected area is copied as a picture, as it looks. Copies are kept in this list, or only on the clipboard.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Copies from other devices") {
+                Toggle("Keep copies from iPhone, iPad and other Macs in a list of their own", isOn: Binding(
+                    get: { !store.value.remoteListOptOut },
+                    set: { store.value.remoteListOptOut = !$0 }))
+                if !store.value.remoteListOptOut {
+                    Picker("The list", selection: $store.value.remoteList) {
+                        Text("Ask at the next copy from another device").tag(String?.none)
+                        ForEach(store.value.lists) { Text($0.name).tag(Optional($0.id)) }
+                    }
+                }
+                Toggle("Put them on the Mac\u{2019}s clipboard right away", isOn: $store.value.remoteToLocal)
+                Text("A copy from another device arrives through Universal Clipboard as a promise: macOS fetches it from the device when you paste, and only for a short time. With this on, Snippad puts the copy it recorded back on the clipboard as the Mac\u{2019}s own, so it pastes straight away and later too. One list holds the copies of all your devices; macOS does not tell which device a copy came from.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             Section("Startup") {
                 Toggle("Open Snippad at login", isOn: Binding(
@@ -147,6 +226,18 @@ private struct GeneralTab: View {
         .formStyle(.grouped)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             system = SystemState()
+            usage = ClipboardHistory.shared.diskUsageText
+        }
+        .onChange(of: ClipboardHistory.shared.items.count) { usage = ClipboardHistory.shared.diskUsageText }
+        .confirmationDialog(pendingAge.map { "Delete \($0.count) entries now?" } ?? "",
+                            isPresented: Binding(get: { pendingAge != nil }, set: { if !$0 { pendingAge = nil } })) {
+            Button("Delete Them", role: .destructive) {
+                if let pendingAge { ClipboardHistory.shared.maxAgeDays = pendingAge.days }
+                pendingAge = nil
+            }
+            Button("Cancel", role: .cancel) { pendingAge = nil }
+        } message: {
+            Text("\(pendingAge?.count ?? 0) unpinned entries are older than that, and are deleted at once. Pinned entries stay.")
         }
     }
 
@@ -162,14 +253,12 @@ private struct ApplicationsTab: View {
     @State private var query = ""
     @State private var onlyCopiedFrom = false
     @State private var onlyMissing = false
-    @State private var model = SettingsModel.shared
 
     private var missingCount: Int { catalog.apps.values.filter { $0.missing == true }.count }
 
     private var rows: [AppRecord] {
         catalog.sorted.filter { app in
-            (model.appsOfList.map { store.listID(for: app.bundleID) == $0 } ?? true)
-                && (!onlyCopiedFrom || (app.copies ?? 0) > 0)
+            (!onlyCopiedFrom || (app.copies ?? 0) > 0)
                 && (!onlyMissing || app.missing == true)
                 && (query.isEmpty || app.name.localizedCaseInsensitiveContains(query) || app.bundleID.localizedCaseInsensitiveContains(query))
         }
@@ -181,10 +270,6 @@ private struct ApplicationsTab: View {
                 .font(.callout).foregroundStyle(.secondary)
             HStack {
                 TextField("Search applications", text: $query).textFieldStyle(.roundedBorder)
-                if let list = model.appsOfList {
-                    Toggle("Only apps going to \u{201C}\(store.list(list).name)\u{201D}", isOn: Binding(
-                        get: { model.appsOfList != nil }, set: { if !$0 { model.appsOfList = nil } }))
-                }
                 Toggle("Only apps copied from", isOn: $onlyCopiedFrom)
                 if missingCount > 0 || onlyMissing {
                     Toggle("Only not found (\(missingCount))", isOn: $onlyMissing)
@@ -312,6 +397,114 @@ private struct TapStatusText: View {
                 .foregroundStyle(.red)
         } else {
             Label("Not installed", systemImage: "keyboard").foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// A global shortcut: on or off, and its keys, recorded by pressing them.
+private struct HotKeyRow: View {
+    let title: String
+    @Binding var enabled: Bool
+    @Binding var keys: String
+    let defaultKeys: String
+    @State private var recording = false
+    @State private var monitor: Any?
+    @State private var message: String?
+
+    private var shortcut: KeyShortcut? { KeyShortcut(keys) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Toggle(title, isOn: $enabled)
+                Spacer()
+                Button {
+                    recording ? stop() : start()
+                } label: {
+                    Text(recording ? "Press the keys\u{2026}" : shortcut?.display ?? keys)
+                        .monospaced()
+                        .frame(minWidth: 90)
+                }
+                .disabled(!enabled)
+                .help("Click, then press the new keys. Escape cancels.")
+                Button("Default") { keys = defaultKeys; message = nil }
+                    .disabled(keys == defaultKeys)
+            }
+            if let note = message ?? warning {
+                Text(note).font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .onDisappear(perform: stop)
+    }
+
+    /// Another of Snippad's shortcuts, or a snippet, has the same keys; or
+    /// macOS did not give them to Snippad.
+    private var warning: String? {
+        guard enabled, let shortcut else { return nil }
+        let s = SettingsStore.shared.value
+        let others = [(s.hotKeyEnabled, s.historyShortcut, "the history menu"), (s.pickerHotKeyEnabled, s.pickerShortcut, "the picker"),
+                      (s.organizerHotKeyEnabled, s.organizerShortcut, "the Organizer")]
+            .filter { $0.0 && $0.1 == shortcut }
+        if others.count > 1 { return "\(shortcut.display) is used twice; only one of them works." }
+        if let snippet = SnippetShortcuts.assigned().first(where: { $0.snippet.shortcut.flatMap(KeyShortcut.init) == shortcut }) {
+            return "\(shortcut.display) is also the shortcut of \u{201C}\(snippet.snippet.name)\u{201D}; Snippad\u{2019}s own shortcut wins."
+        }
+        if StatusMenu.shared.unavailableHotKeys.contains(shortcut) {
+            return "macOS did not give Snippad \(shortcut.display); another app may have it."
+        }
+        return nil
+    }
+
+    private func start() {
+        message = nil
+        recording = true
+        SnippetShortcuts.pause()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 {  // Escape
+                stop()
+                return nil
+            }
+            guard let new = KeyShortcut(keyCode: event.keyCode, flags: event.modifierFlags) else {
+                message = "That key cannot be a shortcut; use a letter, digit, punctuation or function key."
+                return nil
+            }
+            guard new.isUsable else {
+                message = "Hold ⌃, ⌥ or ⌘ with the key (only function keys may stand alone)."
+                return nil
+            }
+            keys = new.text
+            stop()
+            return nil
+        }
+    }
+
+    private func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        if recording {
+            recording = false
+            SnippetShortcuts.resume()
+        }
+    }
+}
+
+/// One of macOS's alert sounds, or none; choosing one plays it.
+private struct SoundPicker: View {
+    let title: String
+    @Binding var name: String
+
+    var body: some View {
+        HStack {
+            Picker(title, selection: Binding(get: { name }, set: { name = $0; SnippadSound.play($0) })) {
+                Text("None").tag("")
+                Divider()
+                ForEach(SnippadSound.names, id: \.self) { Text($0).tag($0) }
+            }
+            Button("Play", systemImage: "play.fill") { SnippadSound.play(name) }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .disabled(name.isEmpty)
+                .help("Play it")
         }
     }
 }

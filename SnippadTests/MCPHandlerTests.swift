@@ -88,7 +88,8 @@ final class MCPHandlerTests: XCTestCase {
         XCTAssertEqual(try SnippadParser.parse(String(contentsOf: file, encoding: .utf8))[0].value, "hunter2")
         r = try tool("snippad_set_snippet", ["path": file.path, "name": "pw", "value": "••••••••", "once": true])
         XCTAssertEqual(try SnippadParser.parse(String(contentsOf: file, encoding: .utf8))[0],
-                       Snippet(id: 0, name: "pw", value: "hunter2", once: true, password: true))
+                       Snippet(id: 0, name: "pw", value: "hunter2", once: true, password: true,
+                               color: SnippetColors.derived(from: "pw")), "it keeps the colour it was shown in")
     }
 
     func testToolErrorsAreResults() throws {

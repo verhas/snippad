@@ -113,6 +113,8 @@ struct SnippadSettings: Codable, Equatable, Sendable {
     var toolbarDisplayMode = 1
     /// ⇧⌘V opens a window with the preferred list's entries.
     var pickerHotKeyEnabled = true
+    /// ⇧⌘H opens the Snippad Organizer from any app.
+    var organizerHotKeyEnabled = true
     /// The list the history window highlights and ⇧⌘V shows; nil is all
     /// lists.
     var preferredList: String?
@@ -120,9 +122,50 @@ struct SnippadSettings: Codable, Equatable, Sendable {
     /// window's sidebar until closed there. Those in ~/.snippad are always
     /// listed.
     var openSnippadFiles: [String] = []
+    /// Copies from an iPhone, iPad or another Mac (Universal Clipboard) go
+    /// to this list. nil: none yet -- one is offered at the first such copy,
+    /// unless `remoteListOptOut`.
+    var remoteList: String?
+    /// The user does not want a list for copies from other devices.
+    var remoteListOptOut = false
+    /// A copy from another device is put back on the clipboard at once as
+    /// the Mac's own data, so it pastes without fetching it from the device
+    /// again and does not expire.
+    var remoteToLocal = true
+    /// The list screenshots go to; nil is the first list (Clipboard).
+    var screenshotList: String?
+    /// Seconds before "Screen in … Seconds" takes the picture: 10, 20, 30
+    /// or 60.
+    var screenshotDelay = 10
     /// The .snippad button windows open when Snippad last ran; opened again
     /// at launch.
     var openWindows: [String] = []
+    /// The image editor's grid: shown, its spacing in pixels of the image,
+    /// and whether drawing and dragging snap to it, or to the edges and
+    /// centres of the other objects.
+    var imageGridShown = false
+    var imageGridSize = 20
+    var imageSnapToGrid = false
+    var imageSnapToObjects = true
+    /// Objects copied in the image editor are kept in the history, in this
+    /// list (nil: the first list, Clipboard) -- or not at all.
+    var imageObjectsList: String?
+    var imageObjectsRecorded = true
+    /// Unpinned entries older than this many days are deleted; 0 keeps them
+    /// however old (only `historyLimit` applies).
+    var historyMaxAgeDays = 0
+    /// The global shortcuts, as `"ctrl+cmd+v"`; each switched on and off by
+    /// its `…Enabled` setting.
+    var historyHotKey = "ctrl+cmd+v"
+    var pickerHotKey = "shift+cmd+v"
+    var organizerHotKey = "shift+cmd+h"
+    /// A system sound (by name, from /System/Library/Sounds) when Snippad
+    /// puts something on the clipboard, and when it pastes for you; "" is
+    /// silent.
+    var copySound = ""
+    var pasteSound = ""
+    /// The copy sound also for what is copied in other apps.
+    var copySoundForOtherApps = false
 
     init() {}
 
@@ -142,9 +185,28 @@ struct SnippadSettings: Codable, Equatable, Sendable {
         wordWrap = try c.decodeIfPresent(Bool.self, forKey: .wordWrap) ?? d.wordWrap
         toolbarDisplayMode = try c.decodeIfPresent(Int.self, forKey: .toolbarDisplayMode) ?? d.toolbarDisplayMode
         pickerHotKeyEnabled = try c.decodeIfPresent(Bool.self, forKey: .pickerHotKeyEnabled) ?? d.pickerHotKeyEnabled
+        organizerHotKeyEnabled = try c.decodeIfPresent(Bool.self, forKey: .organizerHotKeyEnabled) ?? d.organizerHotKeyEnabled
         preferredList = try c.decodeIfPresent(String.self, forKey: .preferredList)
         openSnippadFiles = try c.decodeIfPresent([String].self, forKey: .openSnippadFiles) ?? d.openSnippadFiles
         openWindows = try c.decodeIfPresent([String].self, forKey: .openWindows) ?? d.openWindows
+        screenshotList = try c.decodeIfPresent(String.self, forKey: .screenshotList)
+        screenshotDelay = try c.decodeIfPresent(Int.self, forKey: .screenshotDelay) ?? d.screenshotDelay
+        remoteList = try c.decodeIfPresent(String.self, forKey: .remoteList)
+        remoteListOptOut = try c.decodeIfPresent(Bool.self, forKey: .remoteListOptOut) ?? d.remoteListOptOut
+        remoteToLocal = try c.decodeIfPresent(Bool.self, forKey: .remoteToLocal) ?? d.remoteToLocal
+        imageGridShown = try c.decodeIfPresent(Bool.self, forKey: .imageGridShown) ?? d.imageGridShown
+        imageGridSize = max(2, try c.decodeIfPresent(Int.self, forKey: .imageGridSize) ?? d.imageGridSize)
+        imageSnapToGrid = try c.decodeIfPresent(Bool.self, forKey: .imageSnapToGrid) ?? d.imageSnapToGrid
+        imageSnapToObjects = try c.decodeIfPresent(Bool.self, forKey: .imageSnapToObjects) ?? d.imageSnapToObjects
+        imageObjectsList = try c.decodeIfPresent(String.self, forKey: .imageObjectsList)
+        imageObjectsRecorded = try c.decodeIfPresent(Bool.self, forKey: .imageObjectsRecorded) ?? d.imageObjectsRecorded
+        historyMaxAgeDays = try c.decodeIfPresent(Int.self, forKey: .historyMaxAgeDays) ?? d.historyMaxAgeDays
+        historyHotKey = try c.decodeIfPresent(String.self, forKey: .historyHotKey) ?? d.historyHotKey
+        pickerHotKey = try c.decodeIfPresent(String.self, forKey: .pickerHotKey) ?? d.pickerHotKey
+        organizerHotKey = try c.decodeIfPresent(String.self, forKey: .organizerHotKey) ?? d.organizerHotKey
+        copySound = try c.decodeIfPresent(String.self, forKey: .copySound) ?? d.copySound
+        pasteSound = try c.decodeIfPresent(String.self, forKey: .pasteSound) ?? d.pasteSound
+        copySoundForOtherApps = try c.decodeIfPresent(Bool.self, forKey: .copySoundForOtherApps) ?? d.copySoundForOtherApps
         normalize()
     }
 
@@ -160,8 +222,24 @@ struct SnippadSettings: Codable, Equatable, Sendable {
         appLists = appLists.filter { ids.contains($0.value) }
         if let p = privateBrowsingList, !ids.contains(p) { privateBrowsingList = nil }
         if let p = preferredList, !ids.contains(p) { preferredList = nil }
+        if let r = remoteList, !ids.contains(r) { remoteList = nil }
+        if let l = screenshotList, !ids.contains(l) { screenshotList = nil }
+        if let l = imageObjectsList, !ids.contains(l) { imageObjectsList = nil }
+        if ![10, 20, 30, 60].contains(screenshotDelay) { screenshotDelay = 10 }
         historyLimit = max(1, historyLimit)
+        historyMaxAgeDays = max(0, historyMaxAgeDays)
+        let d = SnippadSettings.defaultHotKeys
+        if KeyShortcut(historyHotKey)?.isUsable != true { historyHotKey = d.history }
+        if KeyShortcut(pickerHotKey)?.isUsable != true { pickerHotKey = d.picker }
+        if KeyShortcut(organizerHotKey)?.isUsable != true { organizerHotKey = d.organizer }
     }
+
+    static let defaultHotKeys = (history: "ctrl+cmd+v", picker: "shift+cmd+v", organizer: "shift+cmd+h")
+
+    /// The shortcuts as keys.
+    var historyShortcut: KeyShortcut { KeyShortcut(historyHotKey) ?? KeyShortcut(key: "v", control: true, command: true) }
+    var pickerShortcut: KeyShortcut { KeyShortcut(pickerHotKey) ?? KeyShortcut(key: "v", shift: true, command: true) }
+    var organizerShortcut: KeyShortcut { KeyShortcut(organizerHotKey) ?? KeyShortcut(key: "h", shift: true, command: true) }
 }
 
 /// The settings, loaded from and saved to `~/.snippad/settings.json` on

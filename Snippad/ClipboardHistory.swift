@@ -36,6 +36,11 @@ struct ClipItem: Identifiable, Codable, Equatable, Sendable {
     var edited: Date?
     /// Being made: Extract Text is still reading the image. Never saved.
     var pending: Bool?
+    /// An edited image: the original, the shapes, texts and effects added,
+    /// and the crop. `items` holds the result, which is what is pasted.
+    var edits: ImageEdits?
+    /// The name the user gave the entry, shown instead of its first line.
+    var name: String?
 
     init(items: [[String: Data]], sourceApp: String? = nil, date: Date = Date()) {
         self.items = items
@@ -131,6 +136,9 @@ struct ClipItem: Identifiable, Codable, Equatable, Sendable {
         switch form {
         case .original:
             return nil
+        case .markdown:
+            guard let rich = attributedString else { return nil }
+            out[T.string.rawValue] = Data(MarkdownConverter.markdown(from: rich).utf8)
         case .richText:
             guard let rich = attributedString,
                   let rtf = rich.rtf(from: NSRange(location: 0, length: rich.length), documentAttributes: [:]) else { return nil }
@@ -173,7 +181,8 @@ struct ClipItem: Identifiable, Codable, Equatable, Sendable {
     /// One line for menus and lists; a password shows as dots.
     var title: String {
         if pending == true { return "Reading text\u{2026}" + (label.map { " (\($0))" } ?? "") }
-        if isPassword { return (label.map { "\($0): " } ?? "") + Self.mask }
+        if isPassword { return ((name ?? label).map { "\($0): " } ?? "") + Self.mask }
+        if let name, !name.isEmpty { return name }
         switch kind {
         case .files:
             let urls = fileURLs
@@ -261,7 +270,12 @@ struct ClipboardError: LocalizedError {
 @MainActor
 @Observable
 final class ClipboardHistory {
-    static let shared = ClipboardHistory(apps: .shared)
+    /// In the unit tests, a history of their own in a temporary folder:
+    /// the user's history is neither read nor changed.
+    static let shared = SnippadHome.isTesting
+        ? ClipboardHistory(directory: FileManager.default.temporaryDirectory.appendingPathComponent("SnippadTestHistory-\(UUID().uuidString)"),
+                           pasteboard: PasteEngine.shared.pasteboard, apps: .shared)
+        : ClipboardHistory(apps: .shared)
 
     private(set) var items: [ClipItem] = []
 
@@ -274,6 +288,14 @@ final class ClipboardHistory {
     /// Called when what is on the clipboard, or the list it belongs to,
     /// changed: the keyboard tap follows it.
     @ObservationIgnored var onCurrentChange: (() -> Void)?
+
+    /// Asked the first time something comes from another device and there
+    /// is no list for such copies: answers with a list name to create, or
+    /// nil to opt out. Not set in the tests, which then never ask.
+    @ObservationIgnored var askForRemoteList: ((_ answer: @escaping @MainActor (String?) -> Void) -> Void)?
+    /// Entries from other devices recorded while the question is open; they
+    /// move to the new list once it exists.
+    @ObservationIgnored private var awaitingRemoteList: [UUID]?
 
     @ObservationIgnored let settings: SettingsStore
     @ObservationIgnored let apps: AppCatalog?
@@ -290,6 +312,15 @@ final class ClipboardHistory {
         get { settings.value.historyLimit }
         set {
             settings.value.historyLimit = newValue
+            trim()
+        }
+    }
+
+    /// Unpinned entries older than this many days are deleted; 0 never.
+    var maxAgeDays: Int {
+        get { settings.value.historyMaxAgeDays }
+        set {
+            settings.value.historyMaxAgeDays = max(0, newValue)
             trim()
         }
     }
@@ -321,7 +352,13 @@ final class ClipboardHistory {
     func activate() {
         engine.recorder = { [weak self] item in self?.recordOwn(item) }
         scanMissingMetadata()
+        trim()
         startMonitoring()
+        // Entries grow old while Snippad runs, too.
+        let ageTimer = Timer(timeInterval: 15 * 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.trim() }
+        }
+        RunLoop.main.add(ageTimer, forMode: .common)
     }
 
     // MARK: - Watching the clipboard
@@ -374,14 +411,20 @@ final class ClipboardHistory {
         // Snippad's own writes were recorded when they were made.
         if own == nil, pbItems.contains(where: { $0.types.contains(.snippadSource) }) { return }
 
-        let front = own == nil ? NSWorkspace.shared.frontmostApplication : nil
-        let bundleID = own == nil ? front?.bundleIdentifier : Bundle.main.bundleIdentifier
+        // A copy from another device (Universal Clipboard) did not come
+        // from the app in front.
+        let remote = own == nil && pbItems.contains { $0.types.contains(.remoteClipboard) }
+        let front = own == nil && !remote ? NSWorkspace.shared.frontmostApplication : nil
+        let bundleID = own != nil ? Bundle.main.bundleIdentifier : front?.bundleIdentifier
         apps?.noteCopy(from: front)
 
         var listID = own?.list ?? settings.listID(for: bundleID)
         if own == nil, let privateList = settings.value.privateBrowsingList, let front,
            BrowserPrivacy.isBrowser(bundleID), BrowserPrivacy.state(of: front) == .privateWindow {
             listID = privateList
+        }
+        if remote {
+            listID = settings.value.remoteList ?? ClipList.defaultID
         }
         currentItemID = nil
         currentListID = listID
@@ -404,12 +447,57 @@ final class ClipboardHistory {
         }
         guard !items.isEmpty else { return }
 
-        var item = ClipItem(items: items, sourceApp: own == nil ? front?.localizedName : "Snippad")
+        let fromPhone = pbItems.contains { $0.types.contains(.uikitAttributedString) }
+        var item = ClipItem(items: items, sourceApp: remote ? (fromPhone ? "iPhone or iPad" : "Another device")
+                                                     : own == nil ? front?.localizedName : "Snippad")
         item.sourceBundleID = bundleID
         item.listID = listID == ClipList.defaultID ? nil : listID
         if own?.password == true { item.password = true }
         item.scanMetadata()
         record(item)
+        if own == nil { SnippadSound.copied(own: false) }
+        if remote { remoteRecorded() }
+    }
+
+    /// After a copy from another device: it goes back on the clipboard as
+    /// the Mac's own data (unless switched off), and the first one offers a
+    /// list for all of them.
+    private func remoteRecorded() {
+        guard let id = currentItemID, let item = item(id) else { return }
+        if settings.value.remoteToLocal {
+            // Without the remote marker: the Mac's own copy now.
+            let local = item.pasteboardItems.map { $0.filter { $0.key != .remoteClipboard } }
+            engine.put(items: local, name: item.title, concealed: false)
+            lastChangeCount = pasteboard.changeCount
+        }
+        guard settings.value.remoteList == nil, !settings.value.remoteListOptOut, let ask = askForRemoteList else { return }
+        if awaitingRemoteList != nil {
+            awaitingRemoteList?.append(id)
+            return
+        }
+        awaitingRemoteList = [id]
+        ask { [weak self] name in
+            guard let self else { return }
+            let waiting = self.awaitingRemoteList ?? []
+            self.awaitingRemoteList = nil
+            self.answerRemoteList(name, moving: waiting)
+        }
+    }
+
+    /// Creates the list for copies from other devices (and moves `ids` into
+    /// it), or records that the user does not want one.
+    func answerRemoteList(_ name: String?, moving ids: [UUID] = []) {
+        guard let name else {
+            settings.value.remoteListOptOut = true
+            return
+        }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let list = settings.addList(named: trimmed.isEmpty ? "iPhone & iPad" : trimmed)
+        if let index = settings.value.lists.firstIndex(where: { $0.id == list.id }) {
+            settings.value.lists[index].icon = "iphone"
+        }
+        settings.value.remoteList = list.id
+        for id in ids { move(id, toList: list.id) }
     }
 
     /// Records what Snippad itself just put on the clipboard.
@@ -437,6 +525,7 @@ final class ClipboardHistory {
             existing.sourceApp = item.sourceApp ?? existing.sourceApp
             existing.sourceBundleID = item.sourceBundleID ?? existing.sourceBundleID
             existing.label = item.label ?? existing.label
+            existing.name = item.name ?? existing.name
             if item.isPassword { existing.password = true }
             if existing.metadata == nil { existing.metadata = item.metadata }
             recorded = existing
@@ -498,12 +587,138 @@ final class ClipboardHistory {
         try? FileManager.default.removeItem(at: file(for: id))
     }
 
+    // MARK: - Deleting with Undo
+
+    /// Entries deleted together, kept in memory for `undoWindow` so Undo can
+    /// bring them back. Never written to disk.
+    struct DeletedBatch: Sendable {
+        let items: [ClipItem]
+        let date: Date
+    }
+
+    /// How long a deletion can be undone.
+    static let undoWindow: TimeInterval = 5 * 60
+
+    /// The deletions that can still be undone, the latest last.
+    private(set) var deleted: [DeletedBatch] = []
+
+    /// What Undo Delete would bring back, if anything.
+    var undoableDelete: DeletedBatch? {
+        deleted.last { Date().timeIntervalSince($0.date) < Self.undoWindow }
+    }
+
+    /// Deletes entries so that `undoDelete` can bring them back.
+    func delete(undoably ids: some Sequence<UUID>) {
+        let wanted = Set(ids)
+        let gone = items.filter { wanted.contains($0.id) && $0.pending != true }
+        for item in gone { delete(item.id) }
+        guard !gone.isEmpty else { return }
+        deleted.removeAll { Date().timeIntervalSince($0.date) >= Self.undoWindow }
+        deleted.append(DeletedBatch(items: gone, date: Date()))
+        if deleted.count > 50 { deleted.removeFirst() }
+    }
+
+    /// Brings back the last deletion: the entries return to their places.
+    /// Those copied again since stay where they are now.
+    @discardableResult
+    func undoDelete() -> [ClipItem] {
+        guard let batch = undoableDelete else { return [] }
+        deleted.removeAll { $0.date == batch.date }
+        let back = batch.items.filter { old in !items.contains { $0.digest == old.digest || $0.id == old.id } }
+        for item in back { save(item) }
+        items = (items + back).sorted { $0.date > $1.date }
+        return back
+    }
+
+    // MARK: - Names
+
+    /// Names an entry; an empty name, or nil, shows its contents again.
+    func rename(_ id: UUID, to name: String?) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        update(id) { $0.name = (trimmed?.isEmpty ?? true) ? nil : trimmed }
+    }
+
+    // MARK: - Size
+
+    /// What the history takes on disk, and how many entries it has there.
+    func diskUsage() -> (bytes: Int64, entries: Int) {
+        let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .fileSizeKey]
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys))) ?? []
+        var bytes: Int64 = 0
+        var count = 0
+        for file in files where file.pathExtension == "plist" {
+            let values = try? file.resourceValues(forKeys: keys)
+            bytes += Int64(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0)
+            count += 1
+        }
+        return (bytes, count)
+    }
+
+    var diskUsageText: String {
+        let usage = diskUsage()
+        return "\(usage.entries) \(usage.entries == 1 ? "entry" : "entries"), "
+            + ByteCountFormatter.string(fromByteCount: usage.bytes, countStyle: .file)
+    }
+
+    // MARK: - Several as one
+
+    /// The text of several entries, one after the other, separated by a line
+    /// break: plain, and formatted when any of them is. Entries without text
+    /// (images, files) are left out. The list is theirs when they share one,
+    /// else the one list with Paste Guard rules among them; entries of two
+    /// lists with rules are not joined, nor is a password with anything.
+    func joined(_ ids: [UUID], separator: String = "\n") throws -> (plain: String, rich: NSAttributedString?, list: String, password: Bool) {
+        let chosen = ids.compactMap(item).filter { $0.isEditableText && $0.pending != true }
+        guard !chosen.isEmpty else { throw ClipboardError("None of these entries is text.") }
+        let lists = Set(chosen.map(\.list))
+        let list: String
+        if lists.count == 1 {
+            list = lists.first!
+        } else {
+            let restricted = lists.filter { settings.list($0).isRestricted }
+            guard restricted.count <= 1 else {
+                throw ClipboardError("These entries come from several lists with Paste Guard rules, so they are not joined.")
+            }
+            list = restricted.first ?? chosen[0].list
+        }
+        let passwords = chosen.filter(\.isPassword).count
+        if passwords > 0 && chosen.count > 1 {
+            throw ClipboardError("A password is not joined with other entries.")
+        }
+        let plain = chosen.map { $0.string ?? $0.attributedString?.string ?? "" }.joined(separator: separator)
+        var rich: NSAttributedString?
+        if chosen.contains(where: { $0.kind == .richText }) {
+            let out = NSMutableAttributedString()
+            let plainAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: NSFont.systemFontSize)]
+            for (i, item) in chosen.enumerated() {
+                if i > 0 { out.append(NSAttributedString(string: separator, attributes: plainAttrs)) }
+                out.append(item.kind == .richText ? item.attributedString ?? NSAttributedString()
+                           : NSAttributedString(string: item.string ?? "", attributes: plainAttrs))
+            }
+            rich = out
+        }
+        return (plain, rich, list, passwords > 0)
+    }
+
+    /// Puts several entries on the clipboard as one, joined; the result is a
+    /// new entry of their list.
+    @discardableResult
+    func copyJoined(_ ids: [UUID], separator: String = "\n") throws -> ClipItem? {
+        let j = try joined(ids, separator: separator)
+        var types = [NSPasteboard.PasteboardType.string.rawValue: Data(j.plain.utf8)]
+        if let rich = j.rich, let rtf = rich.rtf(from: NSRange(location: 0, length: rich.length), documentAttributes: [:]) {
+            types[NSPasteboard.PasteboardType.rtf.rawValue] = rtf
+        }
+        let count = ids.count
+        engine.put(types: types, name: "\(count) entries joined", rules: PasteRules(password: j.password, list: j.list))
+        let digest = ClipItem.digest(of: [types])
+        return items.first { $0.digest == digest }
+    }
+
     /// Empties the history, or one list of it; pinned entries stay unless
     /// `includingPinned`.
     func clear(includingPinned: Bool = false, list: String? = nil) {
-        for item in items where (includingPinned || !item.pinned) && (list == nil || item.list == list) {
-            delete(item.id)
-        }
+        delete(undoably: items.filter { (includingPinned || !$0.pinned) && (list == nil || $0.list == list) }.map(\.id))
     }
 
     /// A deleted list's entries go to the default list.
@@ -533,6 +748,61 @@ final class ClipboardHistory {
             engine.put(items: item.pasteboardItems, name: item.title, concealed: item.isPassword)
             lastChangeCount = pasteboard.changeCount
         }
+    }
+
+    /// Replaces the image of an entry with an edited one, keeping the
+    /// edits (with the original) so they stay changeable. When the entry is
+    /// what is on the clipboard, the clipboard gets the new image as well.
+    func updateImage(_ id: UUID, png: Data, edits: ImageEdits) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        var item = items[index]
+        item.items = [[NSPasteboard.PasteboardType.png.rawValue: png]]
+        item.digest = ClipItem.digest(of: item.items)
+        item.edits = edits
+        item.edited = Date()
+        items[index] = item
+        saveSoon(item)
+
+        if currentItemID == id && pasteboard.changeCount == lastChangeCount {
+            engine.put(items: item.pasteboardItems, name: item.title, concealed: item.isPassword)
+            lastChangeCount = pasteboard.changeCount
+        }
+    }
+
+    /// A screenshot: on the clipboard, and an image entry of the screenshot
+    /// list.
+    @discardableResult
+    func addScreenshot(_ png: Data, label: String) -> ClipItem? {
+        let types = [NSPasteboard.PasteboardType.png.rawValue: png]
+        engine.put(items: [[.png: png]], name: label)
+        lastChangeCount = pasteboard.changeCount
+        var item = ClipItem(items: [types], sourceApp: "Screenshot")
+        item.sourceBundleID = Bundle.main.bundleIdentifier
+        item.label = label
+        let list = settings.value.screenshotList ?? ClipList.defaultID
+        item.listID = list == ClipList.defaultID ? nil : list
+        record(item)
+        if let id = currentItemID, self.item(id)?.list != list { move(id, toList: list) }
+        return currentItemID.flatMap(self.item)
+    }
+
+    /// Objects copied in the image editor: on the clipboard (as objects for
+    /// the editors and as a picture), and an entry of the list the settings
+    /// name for them, unless they are not to be kept.
+    func addImageObjects(_ types: [String: Data], label: String) {
+        engine.put(items: [types.reduce(into: [:]) { $0[NSPasteboard.PasteboardType($1.key)] = $1.value }], name: label)
+        lastChangeCount = pasteboard.changeCount
+        guard settings.value.imageObjectsRecorded else {
+            currentItemID = nil
+            return
+        }
+        var item = ClipItem(items: [types], sourceApp: "Snippad")
+        item.sourceBundleID = Bundle.main.bundleIdentifier
+        item.label = label
+        let list = settings.value.imageObjectsList ?? ClipList.defaultID
+        item.listID = list == ClipList.defaultID ? nil : list
+        record(item)
+        if let id = currentItemID, self.item(id)?.list != list { move(id, toList: list) }
     }
 
     /// An entry still being made, shown at once with a spinner.
@@ -574,6 +844,15 @@ final class ClipboardHistory {
     func convertToPlainText(_ id: UUID) {
         guard let item = item(id), item.kind == .richText || item.attributedString != nil else { return }
         updateText(id, plain: item.string ?? item.attributedString?.string ?? "", rich: nil)
+    }
+
+    /// Makes a plain text entry formatted text, in the system font, to be
+    /// edited with fonts, colours and the rest.
+    func makeRichText(_ id: UUID) {
+        guard let item = item(id), item.kind != .richText, let text = item.string else { return }
+        updateText(id, plain: text, rich: NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize), .foregroundColor: NSColor.textColor,
+        ]))
     }
 
     /// What a files entry's files are called, as text: their paths, or only
@@ -623,6 +902,8 @@ final class ClipboardHistory {
         case main
         /// Rich text (RTF, with its plain text).
         case richText
+        /// Rich text written as Markdown, as plain text.
+        case markdown
     }
 
     /// Whether the entry has rich text to paste as such.
@@ -750,13 +1031,15 @@ final class ClipboardHistory {
         guard !q.isEmpty else { return inList }
         return inList.filter { item in
             if item.isPassword {
-                return item.label?.localizedCaseInsensitiveContains(q) ?? false
+                return (item.label?.localizedCaseInsensitiveContains(q) ?? false)
+                    || (item.name?.localizedCaseInsensitiveContains(q) ?? false)
             }
             return item.title.localizedCaseInsensitiveContains(q)
                 || (item.string?.localizedCaseInsensitiveContains(q) ?? false)
                 || item.fileURLs.contains { $0.path.localizedCaseInsensitiveContains(q) }
                 || (item.sourceApp?.localizedCaseInsensitiveContains(q) ?? false)
                 || (item.label?.localizedCaseInsensitiveContains(q) ?? false)
+                || (item.name?.localizedCaseInsensitiveContains(q) ?? false)
                 || (item.metadata?.localizedCaseInsensitiveContains(q) ?? false)
         }
     }
@@ -767,12 +1050,24 @@ final class ClipboardHistory {
         save(items[index])
     }
 
-    private func trim() {
+    /// Keeps each list within the limit, and drops entries older than the
+    /// age limit; pinned entries stay.
+    func trim() {
+        let days = settings.value.historyMaxAgeDays
+        let cutoff = days > 0 ? Date().addingTimeInterval(-Double(days) * 86400) : nil
         var counts: [String: Int] = [:]
-        for item in items where !item.pinned {
+        for item in items where !item.pinned && item.pending != true {
             counts[item.list, default: 0] += 1
-            if counts[item.list]! > limit { delete(item.id) }
+            if counts[item.list]! > limit || (cutoff.map { item.date < $0 } ?? false) { delete(item.id) }
         }
+    }
+
+    /// How many entries the age limit would delete now; for the settings,
+    /// to ask before it does.
+    func countOlder(thanDays days: Int) -> Int {
+        guard days > 0 else { return 0 }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
+        return items.filter { !$0.pinned && $0.date < cutoff }.count
     }
 
     /// Entries recorded before metadata was kept get it now.

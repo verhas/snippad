@@ -363,6 +363,71 @@ final class ClipboardHistoryTests: XCTestCase {
         XCTAssertTrue(yaml.contains("text: \"line one\\nline \\\"two\\\" <&>\""))
     }
 
+    private func copyFromPhone(_ text: String) {
+        pasteboard.clearContents()
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setData(Data(), forType: .remoteClipboard)
+        item.setData(Data("x".utf8), forType: .uikitAttributedString)
+        pasteboard.writeObjects([item])
+        history.poll()
+    }
+
+    func testCopiesFromOtherDevicesGetOneListAfterAskingOnce() {
+        var asked = 0
+        var pending: (@MainActor (String?) -> Void)?
+        history.askForRemoteList = { answer in asked += 1; pending = answer }
+        copyFromPhone("one")
+        XCTAssertEqual(history.items[0].sourceApp, "iPhone or iPad")
+        XCTAssertNil(history.items[0].sourceBundleID, "not the app in front on the Mac")
+        XCTAssertFalse(pasteboard.types?.contains(.remoteClipboard) == true, "put back as the Mac's own copy")
+        XCTAssertEqual(pasteboard.string(forType: .string), "one")
+        copyFromPhone("two")
+        XCTAssertEqual(asked, 1, "one question, however many copies arrive meanwhile")
+
+        pending?("Phones")
+        let list = try? XCTUnwrap(settings.value.lists.first { $0.name == "Phones" })
+        XCTAssertEqual(settings.value.remoteList, list?.id)
+        XCTAssertEqual(list?.icon, "iphone")
+        XCTAssertEqual(Set(history.items.map(\.list)), [list?.id])
+
+        copyFromPhone("three")
+        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(history.items[0].list, list?.id)
+        XCTAssertEqual(history.currentList.id, list?.id, "the list's Paste Guard rules apply")
+    }
+
+    func testOptingOutOfTheDeviceListAndOfPuttingBack() {
+        var asked = 0
+        history.askForRemoteList = { answer in asked += 1; answer(nil) }
+        settings.value.remoteToLocal = false
+        copyFromPhone("one")
+        XCTAssertTrue(settings.value.remoteListOptOut)
+        XCTAssertEqual(history.items[0].list, ClipList.defaultID)
+        XCTAssertTrue(pasteboard.types?.contains(.remoteClipboard) == true, "left as it came")
+        copyFromPhone("two")
+        XCTAssertEqual(asked, 1, "not asked again after opting out")
+    }
+
+    func testScreenshotsGoToTheirListAndTheClipboard() throws {
+        let png = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,
+                                                 samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                                 bytesPerRow: 0, bitsPerPixel: 0)?.representation(using: .png, properties: [:]))
+        history.addScreenshot(png, label: "Screenshot of a window")
+        XCTAssertEqual(history.items[0].kind, .image)
+        XCTAssertEqual(history.items[0].list, ClipList.defaultID, "the first list unless another is chosen")
+        XCTAssertEqual(pasteboard.data(forType: .png), png)
+
+        settings.value.lists.append(ClipList(id: "shots", name: "Shots"))
+        settings.value.screenshotList = "shots"
+        settings.value.screenshotDelay = 15
+        XCTAssertEqual(settings.value.screenshotDelay, 10, "only 10, 20, 30 or 60 seconds")
+        copy("between")
+        history.addScreenshot(png, label: "Screenshot again")
+        XCTAssertEqual(history.items[0].list, "shots", "the same picture moves to the screenshot list")
+        XCTAssertEqual(history.items.count, 2)
+    }
+
     func testFileContentsBecomeTextOrImageOrAnError() throws {
         let text = try tempFile("notes.md", Data("# hello\nworld\n".utf8))
         let png = try tempFile("dot.png", NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2, pixelsHigh: 2, bitsPerSample: 8,

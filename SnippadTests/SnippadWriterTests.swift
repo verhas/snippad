@@ -138,4 +138,23 @@ final class SnippadWriterTests: XCTestCase {
 
         XCTAssertThrowsError(try SnippadParser.parse("[[snippet]]\nname = \"x\"\nvalue = \"y\"\nkind = \"video\"\n"))
     }
+
+    func testShortcutsParseShowAndRoundTrip() throws {
+        let k = try XCTUnwrap(KeyShortcut("Cmd+Ctrl+K"))
+        XCTAssertEqual(k.text, "ctrl+cmd+k")
+        XCTAssertEqual(k.display, "⌃⌘K")
+        XCTAssertTrue(k.isUsable)
+        XCTAssertFalse(try XCTUnwrap(KeyShortcut("shift+a")).isUsable, "a plain letter would eat typing")
+        XCTAssertTrue(try XCTUnwrap(KeyShortcut("f5")).isUsable)
+        XCTAssertNil(KeyShortcut("hyper+k"))
+        XCTAssertNil(KeyShortcut("ctrl+"))
+
+        let snippets = [Snippet(id: 0, name: "Sig", value: "Regards", shortcut: "ctrl+opt+s")]
+        let text = SnippadWriter.text(for: snippets)
+        XCTAssertTrue(text.contains("shortcut = \"ctrl+opt+s\""))
+        XCTAssertEqual(try SnippadParser.parse(text), snippets)
+        XCTAssertEqual(try SnippadParser.parse("[[snippet]]\nname = \"a\"\nvalue = \"b\"\nshortcut = \"opt+cmd+1\"\n")[0].shortcut,
+                       "opt+cmd+1", "written in the canonical order")
+        XCTAssertThrowsError(try SnippadParser.parse("[[snippet]]\nname = \"a\"\nvalue = \"b\"\nshortcut = \"k\"\n"))
+    }
 }

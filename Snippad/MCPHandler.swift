@@ -67,6 +67,17 @@ enum MCPHandler {
         once pasted (`next`), as for a user name followed by a password. \
         Values marked concealed by password managers are neither recorded nor \
         revealed.
+
+        The user works in the Snippad Organizer, a window with the history, its \
+        lists and the .snippad files. organizer_state tells what it shows: the \
+        selected entries or snippet, and the image open in the image editor. \
+        When the user speaks of "the current image" (or entry, or snippet), \
+        that is it. The image_* tools edit images -- history entries and image \
+        snippets -- without losing the original: everything added stays an \
+        object (shape, line or arrow, text, numbered marker, effect on an area) \
+        that can be changed or removed later, and the crop can be undone. \
+        Positions are pixels of the original image, from its top left corner, \
+        y downwards; image_get shows the image and its objects.
         """
 }
 
@@ -161,6 +172,14 @@ enum MCPTools {
             "password": prop("boolean", "The value is a password: hidden in Snippad, shown as dots in the history, never returned by these tools."),
             "list": prop("string", "Name of the history list its copies go to; default the first list (Clipboard)."),
             "kind": prop("string", "text (default); rich: the value is RTF; file: the value is a file path, and the file itself is copied; image: the value is a base64 PNG."),
+            "shortcut": prop("string", "A system-wide shortcut that copies the snippet, like \"ctrl+opt+k\"; needs ctrl, opt or cmd unless it is a function key."),
+            "color": prop("string", "The button's colour, like \"#A7FFEB\"; without it, one picked from the name."),
+            "icon": prop("string", "An SF Symbol name shown in a corner of the button."),
+            "icon_corner": prop("string", "top-left, top-right (the default), bottom-left or bottom-right."),
+            "x": prop("integer", "The button's left edge in its window, in points; with y. Without them it flows after the others."),
+            "y": prop("integer", "The button's top edge in its window, in points."),
+            "width": prop("integer", "The button's width in points (at least 40); with height. Without them it is as wide as its name."),
+            "height": prop("integer", "The button's height in points (at least 24)."),
         ],
         "required": ["name", "value"],
     ]
@@ -176,7 +195,7 @@ enum MCPTools {
 
     private static let iso = ISO8601DateFormatter()
 
-    private static func summary(_ item: ClipItem) -> [String: Any] {
+    static func summary(_ item: ClipItem) -> [String: Any] {
         var out: [String: Any] = [
             "id": item.id.uuidString,
             "kind": item.kind.rawValue,
@@ -196,6 +215,8 @@ enum MCPTools {
             if !missing.isEmpty { out["missing_files"] = missing.map(\.path) }
         }
         if let m = item.metadata { out["image_metadata"] = m }
+        if let edits = item.edits, !edits.isUnchanged { out["edited"] = true }
+        if let name = item.name { out["name"] = name }
         return out
     }
 
@@ -221,10 +242,16 @@ enum MCPTools {
         var out: [String: Any] = ["name": s.name, "value": s.password ? ClipItem.mask : s.value, "once": s.once,
                                   "kind": s.kind.rawValue]
         if s.kind == .image { out["value"] = imageMarker(s.value) }
+        if let edits = s.edits, !edits.isUnchanged { out["edited"] = true }
         if s.password { out["password"] = true }
         if let e = s.expires { out["expires"] = SnippetDuration.text(e); out["expires_seconds"] = e }
         if let n = s.next { out["next"] = n }
         if let l = s.list { out["list"] = l }
+        if let k = s.shortcut { out["shortcut"] = k }
+        out["color"] = s.shownColor
+        if let i = s.icon { out["icon"] = i; out["icon_corner"] = s.iconCorner.rawValue }
+        if let o = s.origin { out["x"] = o.x; out["y"] = o.y }
+        if let z = s.size { out["width"] = z.width; out["height"] = z.height }
         return out
     }
 
@@ -240,6 +267,24 @@ enum MCPTools {
         if let k = args.string("kind") {
             guard let kind = SnippetKind(rawValue: k) else { throw MCPToolError("kind must be text, rich, file or image") }
             s.kind = kind
+        }
+        if let text = args.string("shortcut"), !text.isEmpty {
+            guard let shortcut = KeyShortcut(text), shortcut.isUsable else { throw MCPToolError("shortcut must look like ctrl+opt+k") }
+            s.shortcut = shortcut.text
+        }
+        if let c = args.string("color"), !c.isEmpty {
+            guard let rgb = SnippetColors.components(c) else { throw MCPToolError("color must look like #A7FFEB") }
+            s.color = SnippetColors.hex(red: rgb.red, green: rgb.green, blue: rgb.blue)
+        }
+        s.icon = args.string("icon").flatMap { $0.isEmpty ? nil : $0 }
+        if let c = args.string("icon_corner") {
+            guard let corner = SnippetCorner(rawValue: c) else { throw MCPToolError("icon_corner must be top-left, top-right, bottom-left or bottom-right") }
+            s.iconCorner = corner
+        }
+        func int(_ key: String) -> Int? { (args.raw[key] as? NSNumber)?.intValue }
+        if let x = int("x"), let y = int("y") { s.origin = SnippetPoint(x: max(0, x), y: max(0, y)) }
+        if let w = int("width"), let h = int("height") {
+            s.size = SnippetSize(width: max(SnippetSize.minimum.width, w), height: max(SnippetSize.minimum.height, h))
         }
         return s
     }
@@ -257,7 +302,9 @@ enum MCPTools {
                 return s.with(value: before.value)
             }
             if s.value.hasPrefix("(image, "), let before = old.first(where: { $0.name == s.name && $0.kind == .image }) {
-                return s.with(value: before.value)
+                var kept = s.with(value: before.value)
+                kept.edits = before.edits
+                return kept
             }
             return s
         }
@@ -291,7 +338,9 @@ enum MCPTools {
 
     // MARK: - The tools
 
-    static let all: [MCPTool] = [
+    static let all: [MCPTool] = core + MCPOrganizerTools.tools
+
+    static let core: [MCPTool] = [
         MCPTool(name: "clipboard_read", title: "Read the clipboard",
                 description: "What is on the clipboard now: text, file paths, or an image. Values marked concealed (passwords, Snippad's paste-once and chained values) are not revealed.",
                 properties: [:], required: [], readOnly: true) { _ in
@@ -385,15 +434,23 @@ enum MCPTools {
         },
 
         MCPTool(name: "history_copy", title: "Copy a history entry",
-                description: "Puts a history entry back on the clipboard, in all the formats it was copied in, and moves it to the top of the history.",
-                properties: ["id": prop("string", "The entry's id from history_list.")],
+                description: "Puts a history entry back on the clipboard, in all the formats it was copied in (or in one form), and moves it to the top of the history.",
+                properties: ["id": prop("string", "The entry's id from history_list."),
+                             "form": prop("string", "original (default: every format it was copied in), main (its main form only), rich_text, or markdown (formatted text written as Markdown, as plain text).")],
                 required: ["id"]) { args in
             let id = try args.id()
             guard let item = ClipboardHistory.shared.item(id) else { throw MCPToolError("No history entry has that id.") }
             if item.filesGone {
                 throw MCPToolError("Its files no longer exist. history_copy_file_names can still copy their names or paths as text.")
             }
-            ClipboardHistory.shared.copy(id)
+            switch args.string("form") ?? "original" {
+            case "original": ClipboardHistory.shared.copy(id)
+            case "main": ClipboardHistory.shared.put(id, as: .main)
+            case "rich_text", "markdown":
+                guard item.attributedString != nil else { throw MCPToolError("This entry has no formatted text.") }
+                ClipboardHistory.shared.put(id, as: args.string("form") == "markdown" ? .markdown : .richText)
+            default: throw MCPToolError("form must be original, main, rich_text or markdown")
+            }
             return [text("\u{201C}\(item.title)\u{201D} is on the clipboard.")]
         },
 
@@ -428,8 +485,8 @@ enum MCPTools {
                 required: ["id"], destructive: true) { args in
             let id = try args.id()
             guard ClipboardHistory.shared.item(id) != nil else { throw MCPToolError("No history entry has that id.") }
-            ClipboardHistory.shared.delete(id)
-            return [text("Deleted.")]
+            ClipboardHistory.shared.delete(undoably: [id])
+            return [text("Deleted. history_undo_delete brings it back, for five minutes.")]
         },
 
         MCPTool(name: "history_clear", title: "Clear the history",
@@ -441,9 +498,10 @@ enum MCPTools {
         },
 
         MCPTool(name: "history_settings", title: "History settings",
-                description: "Reads, and optionally changes, whether copies are recorded and how many unpinned entries are kept.",
+                description: "Reads, and optionally changes, whether copies are recorded, how many unpinned entries each list keeps, and how old they may get. Also tells how much the history takes on disk.",
                 properties: ["recording": prop("boolean", "Record new copies (true) or pause (false)."),
-                             "limit": prop("integer", "How many unpinned entries to keep.")],
+                             "limit": prop("integer", "How many unpinned entries to keep."),
+                             "max_age_days": prop("integer", "Delete unpinned entries older than this many days; 0 keeps them however old.")],
                 required: []) { args in
             let history = ClipboardHistory.shared
             if let recording = args.bool("recording") { history.isCapturing = recording }
@@ -451,7 +509,14 @@ enum MCPTools {
                 guard limit > 0 else { throw MCPToolError("'limit' must be positive") }
                 history.limit = limit
             }
-            return [json(["recording": history.isCapturing, "limit": history.limit, "count": history.items.count])]
+            if let days = args.int("max_age_days") {
+                guard days >= 0 else { throw MCPToolError("'max_age_days' must be 0 or more") }
+                history.maxAgeDays = days
+            }
+            let usage = history.diskUsage()
+            return [json(["recording": history.isCapturing, "limit": history.limit, "max_age_days": history.maxAgeDays,
+                          "count": history.items.count, "disk_bytes": usage.bytes,
+                          "disk_size": ByteCountFormatter.string(fromByteCount: usage.bytes, countStyle: .file)])]
         },
 
         MCPTool(name: "snippad_files", title: "List .snippad files",
@@ -494,6 +559,10 @@ enum MCPTools {
                     "password": prop("boolean", "Mark the value as a password."),
                     "list": prop("string", "The history list its copies go to, by name; \"\" for the default list."),
                     "kind": prop("string", "text, rich (value is RTF), file (value is a path) or image (value is base64 PNG)."),
+                    "shortcut": prop("string", "A system-wide shortcut like \"ctrl+opt+k\"; \"\" removes it."),
+                    "color": prop("string", "The button's colour, like \"#A7FFEB\"."),
+                    "icon": prop("string", "An SF Symbol name shown in a corner of the button; \"\" removes it."),
+                    "icon_corner": prop("string", "top-left, top-right, bottom-left or bottom-right."),
                 ],
                 required: ["path", "name"]) { args in
             let url = try args.snippadURL()
@@ -503,12 +572,14 @@ enum MCPTools {
             if let i = snippets.firstIndex(where: { $0.name == name }) {
                 index = i
             } else {
-                snippets.append(Snippet(id: snippets.count, name: name, value: try args.requiredString("value")))
+                snippets.append(Snippet(id: snippets.count, name: name, value: try args.requiredString("value"), color: SnippetColors.random()))
                 index = snippets.count - 1
             }
             var s = snippets[index]
             if let value = args.string("value"), value != ClipItem.mask, !(s.kind == .image && value.hasPrefix("(image, ")) {
                 s = s.with(value: value)
+                // A new image: the old one's edits no longer belong to it.
+                s.edits = nil
             }
             if let k = args.string("kind") {
                 guard let kind = SnippetKind(rawValue: k) else { throw MCPToolError("kind must be text, rich, file or image") }
@@ -519,6 +590,30 @@ enum MCPTools {
             if let once = args.bool("once") { s.once = once }
             if let next = args.string("next") { s.next = next.isEmpty ? nil : next }
             if let list = args.string("list") { s.list = list.isEmpty ? nil : list }
+            if let text = args.string("shortcut") {
+                if text.isEmpty {
+                    s.shortcut = nil
+                } else {
+                    guard let shortcut = KeyShortcut(text), shortcut.isUsable else { throw MCPToolError("shortcut must look like ctrl+opt+k") }
+                    s.shortcut = shortcut.text
+                }
+            }
+            if let c = args.string("color") {
+                guard SnippetColors.components(c) != nil else { throw MCPToolError("color must look like #A7FFEB") }
+                s.color = SnippetColors.components(c).map { SnippetColors.hex(red: $0.red, green: $0.green, blue: $0.blue) }
+            } else if s.color == nil {
+                s.color = s.shownColor
+            }
+            if let i = args.string("icon") {
+                guard i.isEmpty || NSImage(systemSymbolName: i, accessibilityDescription: nil) != nil else {
+                    throw MCPToolError("icon must be the name of an SF Symbol, such as star.fill")
+                }
+                s.icon = i.isEmpty ? nil : i
+            }
+            if let c = args.string("icon_corner") {
+                guard let corner = SnippetCorner(rawValue: c) else { throw MCPToolError("icon_corner must be top-left, top-right, bottom-left or bottom-right") }
+                s.iconCorner = corner
+            }
             if let newName = args.string("new_name"), newName != name {
                 s = s.with(name: newName)
                 for i in snippets.indices where snippets[i].next == name { snippets[i].next = newName }

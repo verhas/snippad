@@ -8,7 +8,7 @@ It remembers everything you copy, sorts it into lists, keeps it from being paste
 - **History** of everything copied -- text, rich text, images, files -- searchable down to the EXIF data of photos, in the menu bar (⌃⌘V) and in a picker (⇧⌘V).
 - **Lists** for copies from different applications, each with its own icon, and **Paste Guard** rules saying which applications they may be pasted into -- and whether only into private browser windows.
 - **Snippets** in `.snippad` files: text, rich text, files and images, with passwords, expiry, paste-once, and chains (user name first, then the password).
-- **The Snippad Organizer**, one window to edit it all: a text editor with line commands, find and replace, and export; drag and drop between lists; text and QR codes read from images; lists exported as TOML, XML, JSON or YAML.
+- **The Snippad Organizer**, one window to edit it all: a text editor with line commands, find and replace, and export; an image editor with shapes, arrows, text, cropping and pixelating that keeps the original; drag and drop between lists; text and QR codes read from images; lists exported as TOML, XML, JSON or YAML.
 - **MCP** for agents, which can use all of it.
 
 **Our promise.**
@@ -20,8 +20,9 @@ Then [open an issue](https://github.com/verhas/snippad/issues/new) asking for th
 The clipboard icon in the menu bar opens the history, newest first.
 **⌃⌘V** opens the same menu at the mouse pointer, from any app.
 **⇧⌘V** opens a small window with the entries of the [preferred list](#lists), to pick one with the mouse (or the arrow keys and Return); see [The ⇧⌘V window](#the-v-window).
+These shortcuts, and ⇧⌘H for the Organizer, are the defaults; each can be changed or switched off under *Settings > General > Shortcuts*.
 
-- **Snippad Organizer…** (⌘H), the first item, opens the [Organizer](#the-organizer).
+- **Snippad Organizer…** (⇧⌘H), the first item, opens the [Organizer](#the-organizer).
 - Choose an entry to put it back on the clipboard, in all the formats it was copied in.
   Keys **1**–**9** and **0** pick the first ten.
 - **Pinned** entries are listed first and stay when the history is cleared or trimmed.
@@ -31,8 +32,10 @@ The clipboard icon in the menu bar opens the history, newest first.
   - **Put on Clipboard** -- as when you click the entry.
   - **Paste** -- puts the entry's main form on the clipboard (plain text, rich text, the image, the files) and pastes it into the app in front.
   - **Paste as Rich Text** -- for entries that have rich text: the formatted text only.
+  - **Paste as Markdown** -- for rich text: the formatting written as Markdown (headings, bold, italic, strikethrough, code, links, lists), pasted as plain text.
   - **Paste Original** -- every format it was copied in, then pastes.
-  - **Pin**, **Move to List ▸**, **Delete**.
+  - **Pin**, **Rename…**, **Move to List ▸**, **Delete**.
+    A renamed entry shows its name instead of its first line, everywhere, and search finds it by its name.
   - **Extract Text** -- for images and image files: reads the text, and the contents of any QR code, into a new text entry (see below).
   - **Add to Snippad ▸** -- for text: adds it as a new snippet to one of the open `.snippad` files.
   - **Share ▸** -- the services that can take the entry: Mail, Messages, AirDrop, Notes, and so on.
@@ -45,7 +48,9 @@ The clipboard icon in the menu bar opens the history, newest first.
   Menus cannot be dragged from or dropped on either, so moving by drag and drop is in the Organizer.
 - Passwords show as `name: ••••••••`, never their value.
 - **Snippets** lists the open `.snippad` files, with their snippets.
-- **Record Clipboard History** pauses and resumes recording; **Paste Guard** switches the [Paste Guard](#the-paste-guard) on and off.
+- **Record Clipboard History** pauses and resumes recording; below it, how many entries the history holds and what they take on disk.
+- **Undo Delete** appears for five minutes after entries were deleted -- from this menu, the Organizer, or by an agent -- and brings them back.
+- **Paste Guard** switches the [Paste Guard](#the-paste-guard) on and off.
 - **Settings…** (⌘,) opens the [settings window](#settings).
 
 The history is kept in `~/Library/Application Support/Snippad/History`, one file per entry, readable only by you.
@@ -57,8 +62,11 @@ Not recorded:
 
 What Snippad itself puts on the clipboard -- a snippet, the next step of a chain, an entry chosen again -- is always recorded, passwords as dots.
 
+Only one Snippad runs at a time: if another copy is already running (say, an installed one and a fresh build), Snippad asks which one to keep, and the other quits.
+
 Snippad has a Dock icon and a menu bar only while one of its windows is open.
-Closing the last window leaves it in the menu bar; **Quit Snippad** is in its menu.
+Closing the last window leaves it in the menu bar.
+**⌘Q only closes the Organizer**, so Snippad keeps recording; to quit, choose **Quit Snippad** in the menu bar menu (it is also in the app menu, without a shortcut).
 
 **Extract Text** adds the new entry at once, with a spinner, and fills it in when the text is read.
 It reads the image on this Mac with Apple's Vision framework (nothing is sent anywhere).
@@ -74,13 +82,19 @@ When the preferred list is All Lists, each entry shows its list beside its sourc
 Click an entry -- or move with the arrow keys and press Return -- and it is chosen just as from the menu bar: put on the clipboard, and pasted into the app you were typing in when **Paste after choosing** is on.
 The window does not take the app you were in out of the front; Escape or a click elsewhere closes it.
 
+**Several at once:** ⌘-click entries to mark them (a number shows the order), or ⇧-click to mark a run of them; then Return pastes their texts as one, in that order, a line break between them.
+Formatted text stays formatted.
+Entries without text (images, files) are left out; entries of two lists that both have Paste Guard rules, or a password with anything else, are not joined.
+The joined text is a new entry, of the entries' list -- or, when they come from several, of the one with Paste Guard rules.
+Escape clears the marks first, then closes the window.
+
 ⇧⌘V is *Paste and Match Style* in many apps, and other clipboard managers use it too.
 While the shortcut is on (*Settings > General*), Snippad takes it everywhere; switch it off there if it gets in the way.
 
 ### The Organizer
 
 The **Snippad Organizer** is the central place for everything: the history, the lists and their rules, and the `.snippad` files.
-**Snippad Organizer…** in the menu bar (⌘H), or ⇧⌘H, opens it.
+**Snippad Organizer…** in the menu bar, or **⇧⌘H** from any app, opens it. (⌘H is macOS's Hide; ⇧⌘H is also Finder's and Safari's Home, so it can be switched off in *Settings > General*.)
 Three columns: the sidebar, the entries of the selected list (or of all of them) or the snippets of the selected file, and the selected entry or snippet.
 
 The sidebar has three parts:
@@ -92,10 +106,22 @@ The sidebar has three parts:
 
 The **+** below the sidebar adds a list, creates a `.snippad` file, or opens one.
 
+**Only one kind:** the row above the entries narrows them to text, rich text, links, images, files or colours with one click, together with the search and the list chosen; **⇧⌘F** goes through the kinds that are there. Click the kind again, or **All**, for everything.
+
 **Select several entries** with ⌘-click and ⇧-click.
+**Return** (or **Copy Together**) puts their texts on the clipboard as one, a line break between them, as in the [⇧⌘V window](#the-v-window).
 **Drag entries onto a list** in the sidebar to move them there -- all the selected ones when you drag one of them; the list lights up while you hover.
+**Drag entries onto a Snippad file** in the sidebar to add them to it as snippets, as **Add to Snippad** does; they stay in the history.
+**Drag a snippet onto another Snippad file** in the sidebar to copy it there; hold ⌘ while dropping to move it instead.
+A copy gets a name of its own if the file already has one like it, and keeps its rules but not its shortcut (only one snippet can have a shortcut) or its chain (chains stay within a file); a moved snippet keeps its shortcut.
+The last snippet of a file is only copied, since a file needs one.
+
+**Drag entries and snippets into other apps**, too: text into a text field, rich text into a document, an image into a mail or onto the desktop, copied files into a Finder window (Finder makes copies; the originals stay where they are).
+From macOS 26 every selected entry, and every file of an entry, arrives as an item of its own; on macOS 15 a drag into another app carries the one entry dragged, and an entry's first file.
+A drop is not a paste, so what has paste rules stays inside Snippad -- it still drags onto lists and files, but not into other apps: passwords, entries of lists with Paste Guard rules, and snippets that are pasted once, expire, chain to another or go to such a list.
 Entries still shown afterwards (in All Lists, say) stay selected.
-With several selected, the right pane and the right-click menu offer Move to List, Pin, Unpin and Delete for all of them.
+With several selected, the right pane and the right-click menu offer Copy Together, Move to List, Pin, Unpin and Delete for all of them.
+**Deleting can be undone**: **Undo Delete** in the toolbar, or ⌘Z in the list, brings back what was deleted last -- one entry, several, or a whole Clear Unpinned -- for five minutes. Deleted entries are kept in memory only; after five minutes, or when Snippad quits, they are gone.
 The search field finds text, file paths, snippet names, source applications, and the **EXIF, TIFF, GPS and IPTC metadata** of copied images and of copied image files: search for a camera model, a lens, or a date.
 
 The toolbar acts on the selected entry:
@@ -110,16 +136,28 @@ The toolbar acts on the selected entry:
 | **Copy File Contents** | For copied files: what the checked files contain, as text or image, one new entry per file.     |
 | **Copy as Text**     | For copied files: their names, or their full paths, as text, one per line.                         |
 | **Extract Text**     | For images and image files: the text and QR codes in them, as a new text entry.                    |
+| **Copy as Markdown** | For rich text: the formatting written as Markdown, on the clipboard as plain text.                 |
+| **Rename**           | Gives the entry a name, shown instead of its first line and found by search; an empty name removes it. |
 | **Pin**, **List**, **Delete** | Pins the entry, moves it to another list, deletes it.                                     |
 | **Recording** / **Paused** | Pauses and resumes recording.                                                                |
-| **Clear Unpinned…**  | After asking, deletes every unpinned entry -- of the list shown, or of all lists.                  |
+| **Undo Delete**      | Shown for five minutes after a deletion: brings the deleted entries back (also ⌘Z in the list).    |
+| **Clear Unpinned…**  | After asking, deletes every unpinned entry -- of the list shown, or of all lists. Undo Delete brings them back. |
 
 Right-click the toolbar to show **Icon and Text**, **Icon Only** or **Text Only**, as in other Mac apps; Snippad remembers the choice.
 
 **Convert to Plain Text**, in the **Text** menu of a rich text entry, drops its formatting -- also when you are not editing.
+**Make Rich Text**, in the **Text** menu of a plain text entry, does the opposite, so it can be formatted.
+
+**Formatted text is edited with its formatting.**
+While a rich text entry (or a rich text snippet) is being edited, a bar above it has:
+title, heading, subheading and body text; the font (a few common ones, or **Show Fonts…** for all); smaller and bigger;
+**bold**, *italic*, underline and strikethrough (also ⌘B, ⌘I, ⌘U); the text colour and a highlight colour; left, centred, right and justified;
+bulleted and numbered lines; a link; and **Clear Formatting**.
+Each works on the selection, or on what you type next when nothing is selected, and each can be undone.
+macOS's Writing Tools (proofread, rewrite, summarise) work on formatted text too, where Apple Intelligence is available.
 
 **The right-click menu of a list** has **Edit List…**, **Make Preferred**, **Delete List…**, **New List**, and **Export ▸** with **TOML**, **XML**, **JSON** and **YAML**.
-An export holds every entry of the list (or of all lists, from All Lists): its date, list, kind, source application, pinned state and label, and its text (with the RTF of rich text), file paths, or image as base64 PNG.
+An export holds every entry of the list (or of all lists, from All Lists): its date, list, kind, source application, pinned state and label, and its text (with the RTF of rich text), file paths, or image as base64 PNG -- for an edited image also `image_edits`, its original and edits as JSON.
 Password values are never exported; such an entry says `password: true` and has no value.
 
 **Editing** is read-only until you switch on **Edit**, so a stray keystroke changes nothing.
@@ -153,6 +191,59 @@ Clicking it does nothing, and Put on Clipboard, Copy File Contents and Show in F
 Copy Names as Text and Copy Paths as Text still work, and so do Pin, Move to List and Delete.
 When only some of the files are gone, those are greyed out in the file list and cannot be checked; the rest work as usual.
 
+### Editing images
+
+An image entry -- and an image snippet -- has an **Edit** button too. It opens the image editor:
+
+- **Shapes**: rectangle, oval, circle, triangle, polygon and freehand, outlined or filled; **text**, with an optional background.
+  A polygon is clicked corner by corner: double-click, press Return or click the first corner to finish.
+- **Lines and arrows**: straight, polyline (clicked point by point) or freehand.
+  Each end gets its own head: none, arrow, hollow arrow, open arrow, dot, circle, bar, square, hollow square, diamond or hollow diamond.
+  With no head at either end it is a plain line.
+- Shapes, lines and texts each have their colour, line width, line style (solid, short dashes, long dashes, dotted, dash-dot) and size.
+- **Numbered markers**: click with the marker tool, or drag the marker from the editor's bar onto the picture; each new one gets the next number (1, 2, 3, …).
+  A marker is a filled circle by default, or a rounded square, square, diamond, hexagon, map pin, cloud or speech bubble, in any colour; the number is white or black, whichever reads better.
+  The marker shape menu shows the shapes in the markers' colour.
+  The next number can be set, and each marker's number changed.
+  A new marker takes the size of the last one placed or resized: resize the first one, and the rest come out the same.
+- **Move, Resize and Turn**: click anything added to select it: a box with handles shows round it.
+  Drag the object to move it, a corner to resize it, the round handle above it to turn it (with Shift, in steps of 15°); arrow keys nudge it, Delete removes it.
+  ⌥-click selects the object behind the selected one.
+- **Several objects**: ⌘-click (or ⇧-click) adds an object to the selection or takes it out; dragging a rectangle from an empty spot with the pointer selects everything it touches; ⌘A selects all.
+  Selected together, they are moved, nudged, turned, copied, cut, pasted, duplicated and removed together.
+  A style control works on them when they all have what it sets -- the colour of shapes and lines, the line width of both -- and is greyed out otherwise.
+- **Edit Points**: double-click a line or shape (or use the Edit Points button) to drag its points one by one instead; double-click again or press Escape to go back to the box.
+  Moving a corner of a rectangle or triangle makes it a polygon, a point of an oval a freehand shape.
+  Polylines and freehand lines differ only in how they run between their points: straight or smooth.
+- A line made straight keeps its points, unused; made a polyline or freehand again, it gets them back, fitted between its ends. A polygon made a rectangle keeps its corners the same way.
+- **Cut, Copy, Paste and Duplicate** (⌘X, ⌘C, ⌘V, ⌘D) work on objects: they paste into the same picture or into another image's editor, and as a picture into other apps.
+  With an area selected, Copy puts that part of the picture on the clipboard as it looks, with everything drawn on it; Cut copies it, then deletes it.
+  Copies go into the history list named in Settings ▸ General ▸ Image editor, or only onto the clipboard.
+- **Objects**: a list beside the picture shows everything added, the topmost first.
+  Click one to select it, also when it is hidden behind another; ⌘-click selects more, ⇧-click a range.
+  Drag them, or use the buttons below the list or its context menu, to bring the selected ones forward or send them back.
+- **Select an Area** -- a rectangle, oval, circle, triangle, polygon or freehand -- and then **Delete** it (it becomes transparent), **Crop** to it, or give it an **Effect**:
+  - *Hide*: Mosaic (4-pixel blocks to begin with), Hexagon Mosaic, Crystallize, Pointillize, Blur -- each with its size;
+  - *Distort*: Swirl, Vortex, Bulge, Pinch, Hole, Kaleidoscope, Light Tunnel -- each with its strength;
+  - *Colors*: Invert Colors, Black & White, Sepia, Posterize, Comic, Edges, Thermal, X-Ray.
+  An effect stays an object too: select it to move or resize its area, or to change the effect, its size or strength.
+- **Grid**: show a grid of any size, snap to it, and snap to the edges and centres of the other objects, of the image and of the crop (a pink line shows what lined up).
+  Each is one click in the toolbar: the grid on or off, its size (type it, or step through 2, 4, 5, 8, 10, 15, 16, 20, 25 … 1000 px), snapping to the grid, snapping to objects.
+  Hold ⌘ while dragging to snap to nothing. These settings are remembered.
+- **Zoom**: the buttons at the bottom left zoom out and in, to 1:1 (one pixel of the image on one pixel of the screen) and to fit; the percentage is a menu of sizes.
+  Also ⌘+ and ⌘−, ⌘0 for 1:1 and ⌘9 to fit, ⌘- or ⌥-scrolling, pinching, and a double tap with two fingers (1:1 there, or back to fit). Everything can be edited zoomed in; past 1:1 the pixels show sharp.
+  Zoomed in, the picture scrolls: up and down, sideways with Shift, two fingers on the trackpad in any direction. The hand tool, Space held down, or the middle mouse button grab the picture to move it; dragging an object past the edge scrolls along.
+- **Crop**: drag the part to keep. The rest stays visible, dimmed, while you edit.
+- **Paste** (⌘V) puts the image or text on the clipboard into the picture, as an object of its own.
+- **Undo** and **Redo** (⌘Z, ⇧⌘Z), and **Revert**: remove the crop, everything added, or both.
+
+The controls keep their places: what does not apply to the tool or the selected object is greyed out, not hidden.
+
+Nothing is painted into the image for good.
+Snippad keeps the original image, every shape, text, pasted image and effect as an object, and the crop; the result -- what is pasted -- is drawn from them.
+So an edit can be changed or removed at any time later, and a crop undone.
+All of it is saved with the history entry, in exports (`image_edits`), and in the `.snippad` file (`edits`).
+
 ### Lists
 
 The history can be divided into lists: say *Clipboard* for everything, *Work*, and *Private*.
@@ -162,7 +253,7 @@ Lists are set up in the Organizer, not in the settings:
 
 - **Add** one with the **+** below the sidebar.
 - **Right-click** a list for **Edit List…**, **Make Preferred**, **Delete List…**, **New List** and **Export ▸**.
-  **Edit List…** opens the list in the right pane: its name, an **icon** to pick, whether it is the preferred list, which applications' copies go to it (**Choose Applications…** opens *Settings > Applications* showing just those; switch the filter off there to assign others), whether it **collects every copy made in a private browser window**, and its [Paste Guard](#the-paste-guard) rules.
+  **Edit List…** opens the list in the right pane: its name, an **icon** to pick, whether it is the preferred list, which applications' copies go to it (**Choose Applications…** shows every application with a tick for those whose copies go to this list; tick or untick them there -- the same setting as the List column of *Settings > Applications*, from the list's side), whether it **collects every copy made in a private browser window**, and its [Paste Guard](#the-paste-guard) rules.
 - **Private browser windows.** One list -- at most -- collects whatever you copy in a private (incognito) window, whichever list the browser's other copies go to. Switching it on for one list switches it off for the one that had it. That list shows a **lock** in the sidebar.
 - In the sidebar the preferred list has a green star, a list with Paste Guard rules a raised hand, and the private-window list a lock.
 - **Deleting** a list asks what happens to its entries: move them to another list, or delete them.
@@ -172,6 +263,35 @@ Lists are set up in the Organizer, not in the settings:
 - A snippet names the list its copies go to (*Copies go to the list* in the snippet editor); the default is the first list, *Clipboard*.
 - To move entries: drag them onto a list in the Organizer, or use **Move to List** -- in the Organizer's toolbar or right-click menu, or an entry's submenu in the menu bar's history.
 - Each list keeps its own number of unpinned entries.
+
+### Screenshots
+
+**Take Screenshot ▸** in the menu bar menu:
+
+| Command                  | What it takes                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------- |
+| **Screen**               | A whole screen; with several screens, a submenu names them -- an iPad used as a Sidecar display is one of them. |
+| **Screen in 10 Seconds** | The same after a delay, counted down beside the menu bar icon; the menu offers to cancel meanwhile. The delay is 10, 20, 30 or 60 seconds (*Settings > General*). |
+| **Window**               | The pointer becomes a camera: click a window. Without its shadow.                                 |
+| **Window with Shadow**   | The same, with the window's shadow.                                                               |
+| **Area**                 | Drag a rectangle; Escape cancels.                                                                 |
+
+The picture goes on the clipboard, and into the screenshot list as an image entry: the first list, *Clipboard*, unless you choose another -- in *Settings > General*, or **Screenshots go to this list** when editing a list, which then shows a camera in the sidebar.
+An iPhone cannot be an extra screen of the Mac; to capture it, use **Window** on the *iPhone Mirroring* window.
+
+### Copies from iPhone, iPad and other Macs
+
+What you copy on another device signed in to the same Apple Account arrives through Universal Clipboard.
+macOS marks such a copy as coming from another device, but not which one, so Snippad shows it as from *iPhone or iPad* (when an iPhone or iPad app made it) or *Another device*, never as from the Mac app that happened to be in front.
+
+**One list for all your devices.**
+The first time a copy arrives from another device, Snippad asks for the name of a list for them -- suggesting *iPhone & iPad* -- and creates it; from then on every copy from any of your devices goes there, with its own icon and the list's Paste Guard rules.
+Choose **Keep With Other Copies** instead to opt out; you can opt in again any time in *Settings > General*, or with **Collects every copy from iPhone, iPad and other Macs** when editing a list.
+
+**Pasting right away.**
+A Universal Clipboard copy is only a promise on the Mac: macOS fetches it from the device when you paste, and only for a short time.
+So Snippad puts the copy it recorded back on the clipboard as the Mac's own, and ⌘V pastes it at once and later too.
+To leave such copies as they come, switch off **Put them on the Mac's clipboard right away** in *Settings > General*.
 
 ### Passwords
 
@@ -190,6 +310,7 @@ Each list says where its entries may be pasted (right-click it in the Organizer'
 
 - **Any application**, **only these applications** (an allow list), or **any application except these** (a deny list);
 - and, separately, **in web browsers, only into private windows**.
+  With an allow list, the browser has to be on it as well; with a deny list, it must not be on it -- otherwise nothing from the list reaches it, private window or not.
 
 When you type ⌘V, Snippad looks at which list the clipboard's content belongs to -- also when that content was not recorded -- and at the application in front.
 If the list does not allow it, the ⌘V is stopped, the Mac beeps, and a note by the mouse pointer says why.
@@ -211,7 +332,13 @@ Paste from an Edit menu, a context menu, or drag and drop is not.
 
 **Settings…** opens a window with three tabs:
 
-- **General** -- first, the main switch, **Record Clipboard History**; then how many entries each list keeps, the ⌃⌘V and ⇧⌘V shortcuts, *Paste after choosing*, *Open Snippad at login*, the permissions, and the MCP setup command.
+- **General** -- first, the main switch, **Record Clipboard History**; then:
+  - how many unpinned entries each list keeps, and how old they may get (a day to a year, or no limit) -- Snippad asks before an age limit deletes entries at once; pinned entries are always kept;
+  - what the history takes on disk, with **Show in Finder**;
+  - *Paste after choosing*;
+  - **Shortcuts**: the history menu (⌃⌘V), the picker (⇧⌘V) and the Organizer (⇧⌘H), each on or off, and changed by clicking it and pressing the new keys (**Default** brings the original back); a clash with another of them, or with a snippet's shortcut, or keys macOS would not give Snippad, is pointed out;
+  - **Sounds**: one of macOS's alert sounds when Snippad puts something on the clipboard (and, if you like, when you copy in another app), and one when it pastes for you; none by default;
+  - [screenshots](#screenshots), [copies from other devices](#copies-from-iphone-ipad-and-other-macs), *Open Snippad at login*, the permissions, and the MCP setup command.
 - **Applications** -- every installed application and every application something was copied from, with how many copies it made.
   Switch **Record** off to keep an application's copies out of the history; pick the **List** its copies go to.
 - **Paste Guard** -- switch it on, and what it can and cannot do.
@@ -256,13 +383,14 @@ When Snippad quits, it takes a paste-once, chained, or expiring value off the cl
 ## Permissions
 
 Snippad needs no permission to record the clipboard, show the menu, or run the MCP server.
-Two features need more:
+Some features need more:
 
 - **Accessibility** -- for paste-once, chains, the Paste Guard, *Paste after choosing*, and telling a private Firefox window.
   Snippad asks for it only when you click **Allow…** in Settings, the ⚠︎ item in the menu, or switch on a feature that needs it.
   macOS describes this permission as letting an app control the computer; Snippad uses it only to see ⌘V (and to stop it when the Paste Guard says so), to type ⌘V for *Paste after choosing*, and to read the front browser window's title.
   Without it everything else works.
 - **Automation** -- asked for by macOS the first time the Paste Guard needs to know whether a Chrome, Brave, Edge or Vivaldi window is private.
+- **Screen Recording** -- for **Take Screenshot**; macOS asks the first time, and Snippad points to the setting when it is missing.
 
 ### The keyboard tap
 
@@ -309,17 +437,25 @@ The windows open when Snippad quits open again when it starts.
 " Copied “name” " appears briefly at the bottom of the window.
 - **Hover** over a button to see the value it copies (dots for a password).
 - Small icons on a button show its rules: 🔑 password, ⏲ expires, ① paste once, 🔗 chained.
+- **Drag** a button to put it anywhere in the window; it stays there.
+- **Drag its bottom right corner** to resize it.
+- **Drag its icon** to another corner of the button.
+- **Right-click** a button for **Back to Automatic Place** and **Back to Automatic Size**, or an empty spot for **Arrange All Automatically**.
 - Open several files at once; each gets its own window.
 
-The window resizes freely, and the buttons rearrange to fill it.
+Every button has a colour -- a random one for a new snippet -- and can have an icon in a corner; both are chosen in the Organizer.
+A button is as large as its name needs (one line, or two for a long name) until you resize it.
+Buttons you have not moved flow from the top left, row by row, around the ones you placed, and rearrange when the window is resized.
 
-The button window never writes, renames, or moves a file -- it has no Save, Rename, or Move To, and the window title is just a title.
+The button window never renames or moves a file -- it has no Save, Rename, or Move To, and the window title is just a title.
+It writes only where its buttons are, their sizes and their icons' corners, through the Organizer's editor, so the Organizer shows the change at once.
 It reads a file each time the file is opened, and only then.
 
 ## Editing snippets
 
 Select a file under **Snippad Files** in the Organizer's sidebar.
-The middle column lists its snippets in file order (drag to reorder; **+** and **−** below add and remove; Return puts one on the clipboard), and the right pane edits the selected one.
+The middle column lists its snippets in file order (drag to reorder; **New Snippet** and **−** below add and remove; Return puts one on the clipboard), and the right pane edits the selected one.
+Right-click a snippet, or the file in the sidebar, for **New Snippet** too.
 **Edit Snippets…** (⌘E) brings you there from a button window.
 There you set its name, its value, whether it is a **Password** (hidden until you click the eye), the **list its copies go to** (default *Clipboard*), and what happens on the clipboard:
 
@@ -327,20 +463,30 @@ There you set its name, its value, whether it is a **Password** (hidden until yo
 - **Remove from the clipboard after** a time, such as `30s`, `5m` or `1h30m`.
 - **Part of a chain. Once pasted, put on the clipboard** another snippet of the file.
 
+Under **Button**: its **colour** (**Random** picks another), an **icon** from a grid of symbols or any SF Symbol by name, the **corner** the icon sits in, and its **Place** and **Size** in the window. Each has an **Automatic** checkbox: on, the button flows after the others and is as large as its name needs; off, it uses the numbers beside it, which a drag in the window sets too.
+
 A snippet holds one of four kinds of value:
 
 | Kind      | Value in the file           | On the clipboard                         | Edited in Snippad |
 | --------- | --------------------------- | ---------------------------------------- | ----------------- |
 | text      | the text                    | the text                                 | yes               |
-| rich      | RTF                         | the formatted text, and its plain text   | no (shown)        |
+| rich      | RTF                         | the formatted text, and its plain text   | yes, with fonts, colours and the rest |
 | file      | the path                    | the file itself, as Finder copies it     | path only (Choose Another File…) |
-| image     | a PNG, base64-encoded       | the image                                | no (shown)        |
+| image     | a PNG, base64-encoded       | the image                                | yes, with the [image editor](#editing-images) |
 
-The **+** below the snippets adds a text snippet; hold it for **File Snippet…** and **Image Snippet…**.
-**Add to Snippad ▸** on a history entry turns rich text, copied files (one snippet per file) and images into snippets of their kind.
+**New Snippet** below the snippets adds a text snippet; the **…** beside it, and the right-click menu, also offer **New File Snippet…** and **New Image Snippet…**.
+**Add to Snippad ▸** on a history entry -- or dragging entries onto a file in the Organizer's sidebar -- turns rich text, copied files (one snippet per file) and images into snippets of their kind.
 
 A text value is edited with the same editor as history entries.
 **Maximize** (beside the value, or in the toolbar) lets the value fill the whole pane, with line numbers and the **Text** menu; **Restore** brings the form back.
+
+**Shortcut.**
+Give any snippet a system-wide keyboard shortcut: click **Record Shortcut** and press the keys, such as ⌃⌥S.
+It needs ⌃, ⌥ or ⌘ (a function key, such as F5, may stand alone); Escape cancels, Delete removes it.
+Pressing the shortcut in any app puts the snippet on the clipboard with all its rules -- password, expiry, paste once, chain, list -- and pastes it too when *Paste after choosing* is on.
+Pasting for you needs the Accessibility permission for that copy of Snippad; without it, a note by the pointer says the snippet is on the clipboard, ready for ⌘V.
+Every snippet of every open file can have one; the editor warns when two snippets, or a snippet and Snippad's own ⌃⌘V or ⇧⌘V, share a shortcut, or when macOS would not give it to Snippad.
+The menu bar's **Snippets** menu shows the shortcuts.
 
 There is no Save: like everything in the Organizer, changes are written to the file a moment after you make them.
 A change that would make the file unreadable -- a snippet without a name -- is shown at the top of the list and written once it is fixed.
@@ -399,6 +545,13 @@ once = true           # gone after one paste
 expires = "30s"       # gone after 30 seconds anyway
 password = true       # hidden in the editor, dots in the history
 list = "Private"      # its copies go to the history list "Private"
+color = "#FDCFE8"     # the button's colour
+icon = "key.fill"     # an SF Symbol in a corner of the button
+icon_corner = "top-left"
+x = 16                # where the button sits in the window ...
+y = 120
+width = 160           # ... and its size, in points
+height = 48
 ```
 
 | Key       | Value                                                                                      |
@@ -409,8 +562,15 @@ list = "Private"      # its copies go to the history list "Private"
 | `next`    | The `name` of another snippet in the same file. Each snippet in a chain keeps its own rules. |
 | `kind`    | `"text"` (the default), `"rich"` (`value` is RTF), `"file"` (`value` is a path), or `"image"` (`value` is a base64 PNG). |
 | `list`    | The name of the history list its copies go to; left out, the first list (*Clipboard*).     |
+| `shortcut`| A system-wide shortcut that copies it, such as `"ctrl+opt+s"` or `"f5"`: `ctrl`, `opt`, `shift`, `cmd` and a key, joined by `+`. |
+| `color`   | The button's colour, `"#RRGGBB"`. Left out, a colour picked from the name, the same every time; Snippad writes it when it saves the file. |
+| `icon`    | An SF Symbol name, such as `"star.fill"`, shown in a corner of the button.                |
+| `icon_corner` | `"top-left"`, `"top-right"` (the default), `"bottom-left"` or `"bottom-right"`.          |
+| `x`, `y`  | Whole points from the window's top left, both or neither. Left out, the button flows after the others. |
+| `width`, `height` | Whole points, at least 40 × 24, both or neither. Left out, as large as the name needs. |
+| `edits`   | Image snippets only, written by Snippad: the original image and everything added to it, as JSON, so the edits stay changeable. `value` is the result. |
 
-The buttons appear in the order the snippets are in the file.
+Buttons without `x` and `y` appear in the order the snippets are in the file.
 The same file
 is in this repository as [`example.snippad`](example.snippad).
 
@@ -463,12 +623,15 @@ claude mcp add -s user snippad -- /Applications/Snippad.app/Contents/MacOS/Snipp
 | `clipboard_clear`        | Empties the clipboard.                                                           |
 | `history_list`           | Lists the history, with search (EXIF included), kind and list filters, and paging. |
 | `history_get`            | One entry's full text, file paths, or image.                                     |
-| `history_copy`           | Puts an entry back on the clipboard.                                             |
+| `history_copy`           | Puts an entry back on the clipboard: every format, its main form, rich text, or Markdown. |
+| `history_copy_joined`    | Puts the texts of several entries on the clipboard as one.                       |
+| `history_rename`         | Names an entry, or removes its name.                                             |
+| `history_undo_delete`    | Brings back the entries deleted last, within five minutes.                       |
 | `history_add`            | Adds a text entry without touching the clipboard.                                |
 | `history_pin`            | Pins or unpins an entry.                                                         |
-| `history_delete`         | Deletes an entry.                                                                |
+| `history_delete`         | Deletes an entry; `history_undo_delete` brings it back.                          |
 | `history_clear`          | Clears the history, pinned entries too if asked.                                 |
-| `history_settings`       | Reads or sets recording on/off and how many entries are kept.                    |
+| `history_settings`       | Reads or sets recording on/off, how many entries are kept and for how long; tells the size on disk. |
 | `history_update_text`    | Changes the text of a text entry.                                                |
 | `history_move`           | Moves an entry to another list.                                                  |
 | `history_copy_files`     | A new entry with some of an entry's files, on the clipboard.                     |
@@ -486,6 +649,24 @@ claude mcp add -s user snippad -- /Applications/Snippad.app/Contents/MacOS/Snipp
 | `snippad_delete_snippet` | Removes one snippet.                                                             |
 | `snippad_copy`           | Puts a snippet on the clipboard with its rules.                                  |
 | `snippad_open`           | Shows a file in the Organizer's editor, or as buttons.                      |
+| `organizer_state`        | What the Organizer shows: the list or file chosen, the selected entries or snippet, the image open in the image editor -- "the current image". |
+| `organizer_show`         | Opens the Organizer on an entry or a snippet, and with `edit_image` its image in the image editor. |
+| `image_get`              | An image's size, crop and objects (with ids), and the picture as it looks now.   |
+| `image_add`              | Draws on an image: shapes, lines and arrows, texts, numbered markers, effects on areas. |
+| `image_change`           | Changes objects: place, size, rotation, colours, line, text, effect, number.     |
+| `image_remove`           | Removes objects.                                                                 |
+| `image_order`            | Brings objects to the front or back, or one step.                                |
+| `image_crop`             | Crops to a rectangle, or removes the crop.                                       |
+| `image_revert`           | Removes the crop, the objects, or both.                                          |
+| `image_select`           | Selects objects in the open image editor, to show which ones are meant.          |
+| `image_undo`             | Undo or redo in the open image editor.                                           |
+
+**Asking an agent to edit an image.**
+Ask for "the current image" and the agent finds it with `organizer_state`: the image open in the image editor, or else the image entry or image snippet selected in the Organizer.
+The `image_*` tools work like the editor: everything they add stays an object you can move, change or remove afterwards, the original is kept, and the crop can be undone.
+Positions are pixels of the original image, from its top left corner.
+While the image is open in the editor, their changes show there at once, can be selected, and one ⌘Z takes back each call; otherwise they are saved with the entry or the snippet.
+`image_get` returns the picture, so the agent can look at what it drew.
 
 The file tools only write files ending in `.snippad`, and a file is read back before it is written, so they never leave one Snippad cannot open.
 Password values are returned as `••••••••`; writing that mask back keeps the stored password.
@@ -576,9 +757,19 @@ xcrun notarytool store-credentials Snippad --apple-id <Apple ID> --team-id <Team
 |                                      |                                                                            |
 | `Snippad/ListEditor.swift`           | A list's settings: name, icon, sources, Paste Guard rules.                  |
 |                                      |                                                                            |
-| `Snippad/PickerPanel.swift`          | The ⇧⌘V window.                                                            |
+| `Snippad/PickerPanel.swift`          | The ⇧⌘V window, with pasting several entries as one.                       |
+|                                      |                                                                            |
+| `Snippad/Markdown.swift`             | Formatted text written as Markdown.                                        |
+|                                      |                                                                            |
+| `Snippad/Sounds.swift`               | The sounds for copying and pasting.                                        |
+|                                      |                                                                            |
+| `Snippad/OrganizerDrag.swift`        | Dragging entries and snippets into other apps.                             |
 |                                      |                                                                            |
 | `Snippad/TextRecognition.swift`      | Text and QR codes in images, with Vision.                                  |
+|                                      |                                                                            |
+| `Snippad/ImageEdits.swift`           | An edited image: the original, its layers and crop, and drawing the result. |
+|                                      |                                                                            |
+| `Snippad/ImageEditor.swift`          | The image editor: tools, styles, undo, and the canvas.                     |
 |                                      |                                                                            |
 | `Snippad/SnippetBoard.swift`         | The window of buttons.                                                     |
 |                                      |                                                                            |
@@ -596,15 +787,23 @@ xcrun notarytool store-credentials Snippad --apple-id <Apple ID> --team-id <Team
 |                                      |                                                                            |
 | `Snippad/HotKey.swift`               | The system-wide shortcuts.                                                 |
 |                                      |                                                                            |
+| `Snippad/SnippetShortcuts.swift`     | Snippets' own system-wide shortcuts, and the key combination type.         |
+|                                      |                                                                            |
+| `Snippad/RemoteListPrompt.swift`     | The question at the first copy from another device.                        |
+|                                      |                                                                            |
+| `Snippad/Screenshots.swift`          | Take Screenshot: screens (ScreenCaptureKit), windows and areas (`screencapture`). |
+|                                      |                                                                            |
 | `Snippad/HistoryWindow.swift`        | The Snippad Organizer window.                                              |
 |                                      |                                                                            |
 | `Snippad/ListExport.swift`           | Exporting a list as TOML, XML, JSON or YAML.                               |
 |                                      |                                                                            |
-| `Snippad/TextEditorView.swift`       | The text editor: find and replace, line numbers, line commands, transforms, wrapping. |
+| `Snippad/TextEditorView.swift`       | The text editor: find and replace, line numbers, line commands, transforms, wrapping, and formatting rich text. |
 |                                      |                                                                            |
 | `Snippad/MCPServer.swift`            | The socket server in the app and the `--mcp` stdio bridge.                 |
 |                                      |                                                                            |
 | `Snippad/MCPHandler.swift`           | MCP's JSON-RPC methods and the tools.                                      |
+|                                      |                                                                            |
+| `Snippad/MCPOrganizerTools.swift`    | The MCP tools for what the Organizer shows, the image editor, and the newer history commands. |
 |                                      |                                                                            |
 | `Snippad/FileTypeRegistration.swift` | Becoming the default app for `.snippad` at launch.                         |
 |                                      |                                                                            |
