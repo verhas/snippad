@@ -7,12 +7,18 @@ import Vision
 enum TextRecognition {
 
     /// The text found, QR code contents first, then the recognised lines in
-    /// reading order. Throws when there is none.
-    nonisolated static func text(in cgImage: CGImage) throws -> String {
+    /// reading order. Throws when there is none. With `languages`, read in
+    /// those (in order of preference); without, Vision guesses.
+    nonisolated static func text(in cgImage: CGImage, languages: [String]? = nil) throws -> String {
         let textRequest = VNRecognizeTextRequest()
         textRequest.recognitionLevel = .accurate
         textRequest.usesLanguageCorrection = true
-        textRequest.automaticallyDetectsLanguage = true
+        if let languages, !languages.isEmpty {
+            textRequest.recognitionLanguages = languages
+            textRequest.automaticallyDetectsLanguage = false
+        } else {
+            textRequest.automaticallyDetectsLanguage = true
+        }
         let codeRequest = VNDetectBarcodesRequest()
 
         try VNImageRequestHandler(cgImage: cgImage, options: [:]).perform([codeRequest, textRequest])
@@ -23,6 +29,28 @@ enum TextRecognition {
         let parts = (codes + lines).filter { seen.insert($0).inserted }
         guard !parts.isEmpty else { throw ClipboardError("No text or QR code was found in the image.") }
         return parts.joined(separator: "\n")
+    }
+
+    /// The Mac's preferred languages (System Settings › General › Language
+    /// & Region) that Vision reads, in their order: "hu-HU" matches Vision's
+    /// "hu-HU", or else another region of Hungarian.
+    nonisolated static func preferredLanguages(_ preferred: [String] = Locale.preferredLanguages) -> [String] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        let supported = (try? request.supportedRecognitionLanguages()) ?? []
+        func language(_ id: String) -> String { Locale(identifier: id).language.languageCode?.identifier ?? id }
+        var chosen: [String] = []
+        for id in preferred {
+            let match = supported.first { $0.caseInsensitiveCompare(id) == .orderedSame }
+                ?? supported.first { language($0) == language(id) }
+            if let match, !chosen.contains(match) { chosen.append(match) }
+        }
+        return chosen
+    }
+
+    /// The languages to read in, as Settings say: nil lets Vision guess.
+    nonisolated static func languages(_ settings: SnippadSettings) -> [String]? {
+        settings.readTextInPreferredLanguages ? preferredLanguages() : nil
     }
 
     nonisolated static func cgImage(from data: Data) -> CGImage? {
@@ -46,12 +74,12 @@ extension ClipItem {
 
 extension TextRecognition {
     /// The text of several images, separated by a blank line.
-    nonisolated static func text(inImages images: [Data]) throws -> String {
+    nonisolated static func text(inImages images: [Data], languages: [String]? = nil) throws -> String {
         var found: [String] = []
         var lastError: Error?
         for data in images {
             guard let cg = cgImage(from: data) else { continue }
-            do { found.append(try text(in: cg)) } catch { lastError = error }
+            do { found.append(try text(in: cg, languages: languages)) } catch { lastError = error }
         }
         if found.isEmpty { throw lastError ?? ClipboardError("The image could not be read.") }
         return found.joined(separator: "\n\n")
@@ -76,8 +104,9 @@ extension ClipboardHistory {
         let name = "Text from \(item.title)"
         let pending = insertPending(label: item.title, list: item.list)
         do {
-            let text = try await Task.detached(priority: .userInitiated) { try TextRecognition.text(inImages: images) }.value
-            return finishPending(pending, text: text, name: name)
+            let languages = TextRecognition.languages(settings.value)
+            let text = try await Task.detached(priority: .userInitiated) { try TextRecognition.text(inImages: images, languages: languages) }.value
+            return inheriting(from: [id]) { finishPending(pending, text: text, name: name) }
         } catch {
             dropPending(pending)
             throw error
@@ -89,6 +118,31 @@ extension ClipboardHistory {
     @discardableResult
     func extractTextNow(from id: UUID) throws -> ClipItem? {
         let (item, images) = try images(of: id)
-        return putText(try TextRecognition.text(inImages: images), name: "Text from \(item.title)", list: item.list)
+        let text = try TextRecognition.text(inImages: images, languages: TextRecognition.languages(settings.value))
+        return inheriting(from: [id]) { putText(text, name: "Text from \(item.title)", list: item.list) }
+    }
+}
+
+extension ClipboardHistory {
+    /// Reads the text of every image entry that has not had it read, newest
+    /// first, one at a time on a background thread, on the device (Vision,
+    /// no network). Each entry gets its text when it is ready, and with it
+    /// Paste as Text in the menu. Started when an image arrives or is
+    /// edited, at launch, and when the languages in Settings change: then
+    /// every image is read again. A reader already running takes the new ones.
+    func readImageTexts() {
+        guard settings.value.readTextOfImages, textReader == nil else { return }
+        textReader = Task { [weak self] in
+            while let self, self.settings.value.readTextOfImages {
+                let languages = TextRecognition.languages(self.settings.value)
+                guard let next = self.items.first(where: { $0.needsTextReading(in: languages) }) else { break }
+                let id = next.id, digest = next.digest, image = next.imageData
+                let text = await Task.detached(priority: .utility) {
+                    image.flatMap(TextRecognition.cgImage(from:)).flatMap { try? TextRecognition.text(in: $0, languages: languages) } ?? ""
+                }.value
+                self.setReadText(text, of: id, from: digest, in: languages)
+            }
+            self?.textReader = nil
+        }
     }
 }

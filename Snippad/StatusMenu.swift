@@ -1,5 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
+import os
 
 /// The clipboard icon in the menu bar: the history by list, the snippets of
 /// recent .snippad files, and the way to the windows.
@@ -19,8 +20,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     /// give focus back to, and paste into.
     private var previousApp: NSRunningApplication?
 
-    /// How many entries a list shows before "Show All History…".
-    private let menuItemCount = 25
+    /// How many entries a list shows before "Show All … Entries…".
+    private var menuItemCount: Int { settings.value.menuEntryCount }
 
     private var settings: SettingsStore { .shared }
 
@@ -87,7 +88,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menuNeedsUpdate(menu)
         button.highlight(true)
         let below = button.isFlipped ? button.bounds.maxY + 5 : button.bounds.minY - 5
+        startFilling()
         menu.popUp(positioning: nil, at: NSPoint(x: button.bounds.minX, y: below), in: button)
+        stopFilling()
         button.highlight(false)
     }
 
@@ -98,7 +101,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menuNeedsUpdate(menu)
         NSApp.activate()
+        startFilling()
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        stopFilling()
         // popUp returns after the menu closed, and after the chosen action ran.
         if let previousApp {
             previousApp.activate()
@@ -111,8 +116,16 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         sharePickers.removeAll()
+        stopFilling()
+        entrySubmenus.removeAll()
         let history = ClipboardHistory.shared
         let lists = settings.value.lists
+        // The entries the menu shows: the pinned, and the first of each list.
+        var shown = history.items.filter(\.pinned)
+        for list in lists {
+            shown += history.items.lazy.filter { !$0.pinned && $0.list == list.id }.prefix(menuItemCount)
+        }
+        facts = EntryFacts.gather(shown)
 
         let organizer = menu.addItem(withTitle: "Snippad Organizer…", action: #selector(showHistory), keyEquivalent: "")
         if settings.value.organizerHotKeyEnabled, let (key, mask) = settings.value.organizerShortcut.menuKeyEquivalent {
@@ -166,8 +179,14 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             twin.representedObject = item.id
             twin.isHidden = true
             twin.allowsKeyEquivalentWhenHidden = true
-            twin.isEnabled = !item.filesGone
+            twin.isEnabled = !facts(item).gone
             menu.addItem(twin)
+        }
+        let firstCount = history.items.lazy.filter { !$0.pinned && $0.list == first.id }.count
+        if firstCount > recent.count { menu.addItem(showAllItem(first, count: firstCount)) }
+        if lists.count > 1 {
+            menu.addItem(.separator())
+            menu.addItem(.sectionHeader(title: "Lists"))
         }
         for list in lists.dropFirst() {
             let entries = history.items.filter { !$0.pinned && $0.list == list.id }
@@ -180,6 +199,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
                 submenu.addItem(none)
             }
             for item in entries.prefix(menuItemCount) { submenu.addItem(menuItem(for: item, shortcut: nil)) }
+            if entries.count > menuItemCount { submenu.addItem(showAllItem(list, count: entries.count)) }
             sub.submenu = submenu
             menu.addItem(sub)
         }
@@ -230,6 +250,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
                                 action: #selector(requestAccess), keyEquivalent: "")
         item.target = self
         item.toolTip = "Paste-once, chains, the Paste Guard and Paste After Choosing need to see ⌘V in other apps, which takes the Accessibility permission."
+        // Harsh yellow, so it is seen at once: something does not work until
+        // it is done.
+        item.view = AlertMenuItemView(menuItem: item)
     }
 
     @objc private func requestAccess() {
@@ -245,10 +268,13 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menuItem.representedObject = item.id
         menuItem.image = thumbnail(for: item)
         menuItem.toolTip = tooltip(for: item)
-        // Its commands open beside it. A line with a submenu sends no action
-        // when clicked, so a view of its own takes the click.
-        menuItem.submenu = actionsMenu(for: item)
-        menuItem.view = HistoryMenuItemView(menuItem: menuItem, id: item.id, pinned: item.pinned, gone: item.filesGone)
+        // Its commands open beside it, made once the menu is on screen (or
+        // at once, when it is opened first). A line with a submenu sends no
+        // action when clicked, so a view of its own takes the click.
+        let entry = EntrySubmenu(id: item.id, owner: self)
+        entrySubmenus.append(entry)
+        menuItem.submenu = entry.menu
+        menuItem.view = HistoryMenuItemView(menuItem: menuItem, id: item.id, pinned: item.pinned, gone: facts(item).gone)
         return menuItem
     }
 
@@ -339,6 +365,23 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         return menu
     }
 
+    /// The last line of a list longer than the menu shows: opens the
+    /// picker window, which scrolls, on that list.
+    private func showAllItem(_ list: ClipList, count: Int) -> NSMenuItem {
+        let item = NSMenuItem(title: "Show All \(count) Entries…", action: #selector(showAllOfList(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = list.id
+        item.image = NSImage(systemSymbolName: "list.bullet.rectangle", accessibilityDescription: nil)
+        item.toolTip = "Opens the picker window on \(list.name), to scroll through or search all of it"
+        return item
+    }
+
+    @objc private func showAllOfList(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        // After the menu is gone, so the picker becomes key.
+        DispatchQueue.main.async { PickerPanel.show(list: id) }
+    }
+
     // MARK: - Actions
 
     /// A click, Return, or the entry's number: put it on the clipboard.
@@ -425,8 +468,8 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     /// The commands of one history entry: its submenu in the history menu.
-    func actionsMenu(for item: ClipItem) -> NSMenu {
-        let menu = NSMenu()
+    func actionsMenu(for item: ClipItem, into menu: NSMenu = NSMenu()) -> NSMenu {
+        let facts = facts(item)
         // Otherwise AppKit enables every item whose target answers its
         // action, and the isEnabled set below would be ignored.
         menu.autoenablesItems = false
@@ -437,9 +480,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         if item.isPassword {
             preview = item.title
         } else if item.kind == .files {
-            let missing = Set(item.missingFiles)
-            preview = (item.filesGone ? "No longer exists:\n" : "")
-                + item.fileURLs.prefix(3).map { Self.short($0.path, 80) + (missing.contains($0) && !item.filesGone ? "  (missing)" : "") }
+            let missing = facts.missing
+            preview = (facts.gone ? "No longer exists:\n" : "")
+                + item.fileURLs.prefix(3).map { Self.short($0.path, 80) + (missing.contains($0) && !facts.gone ? "  (missing)" : "") }
                     .joined(separator: "\n")
                 + (item.fileURLs.count > 3 ? "\n…" : "")
         } else {
@@ -456,15 +499,18 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
 
-        add(menu, "Put on Clipboard", #selector(entryPut(_:)), context).isEnabled = !item.filesGone
-        add(menu, "Paste", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .main)).isEnabled = !item.filesGone
+        add(menu, "Put on Clipboard", #selector(entryPut(_:)), context).isEnabled = !facts.gone
+        add(menu, "Paste", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .main)).isEnabled = !facts.gone
         if ClipboardHistory.shared.hasRichText(item.id) {
             add(menu, "Paste as Rich Text", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .richText))
             if !item.isPassword {
                 add(menu, "Paste as Markdown", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .markdown))
             }
         }
-        add(menu, "Paste Original", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .original)).isEnabled = !item.filesGone
+        if item.textOfImage != nil {
+            add(menu, "Paste as Text", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .textOfImage))
+        }
+        add(menu, "Paste Original", #selector(entryPaste(_:)), EntryContext(id: item.id, form: .original)).isEnabled = !facts.gone
         menu.addItem(.separator())
         add(menu, item.pinned ? "Unpin" : "Pin", #selector(entryTogglePin(_:)), context)
         add(menu, "Rename\u{2026}", #selector(entryRename(_:)), context)
@@ -479,11 +525,11 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         move.submenu = lists
         menu.addItem(move)
 
-        if item.hasImageForText {
+        if facts.imageForText {
             menu.addItem(.separator())
             add(menu, "Extract Text", #selector(entryExtractText(_:)), context)
         }
-        if item.canBecomeSnippet {
+        if facts.snippet {
             let addTo = NSMenuItem(title: "Add to Snippad", action: nil, keyEquivalent: "")
             let files = NSMenu()
             for url in SnippadLibrary.shared.files {
@@ -499,7 +545,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             addTo.submenu = files
             menu.addItem(addTo)
         }
-        if !item.isPassword, !item.filesGone, case let items = shareItems(for: item), !items.isEmpty {
+        if !item.isPassword, !facts.gone, case let items = shareItems(for: item), !items.isEmpty {
             // The system's own Share menu, with the apps' icons.
             let picker = NSSharingServicePicker(items: items)
             sharePickers.append(picker)
@@ -508,10 +554,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
         if item.kind == .files {
             menu.addItem(.separator())
-            add(menu, "Copy File Contents", #selector(entryFileContents(_:)), context).isEnabled = !item.filesGone
+            add(menu, "Copy File Contents", #selector(entryFileContents(_:)), context).isEnabled = !facts.gone
             add(menu, "Copy Names as Text", #selector(entryNames(_:)), context)
             add(menu, "Copy Paths as Text", #selector(entryPaths(_:)), context)
-            add(menu, "Show in Finder", #selector(entryReveal(_:)), context).isEnabled = !item.filesGone
+            add(menu, "Show in Finder", #selector(entryReveal(_:)), context).isEnabled = !facts.gone
         }
         menu.addItem(.separator())
         add(menu, "Delete", #selector(entryDelete(_:)), context)
@@ -559,13 +605,59 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         case .image: return item.image.map { [$0] } ?? []
         case .files: return item.fileURLs
         case .url: return item.string.flatMap(URL.init(string:)).map { [$0] } ?? []
-        case .richText: return item.attributedString.map { [$0] } ?? []
+        // Not HTML: WebKit, asked while the menu is being made, can take
+        // seconds to answer. Such an entry is shared as its text.
+        case .richText: return (item.attributedStringWithoutWebKit ?? item.string.map(NSAttributedString.init(string:))).map { [$0] } ?? []
         default: return item.string.map { [$0] } ?? []
         }
     }
 
     /// Kept while the menu is up: the share menu item needs its picker.
     private var sharePickers: [NSSharingServicePicker] = []
+
+    // MARK: - Entry submenus, made while the menu is up
+
+    /// What the disk said about the menu's entries, asked all at once.
+    private var facts: [UUID: EntryFacts] = [:]
+    private func facts(_ item: ClipItem) -> EntryFacts { facts[item.id] ?? EntryFacts(item) }
+
+    /// The entries' submenus, in menu order, filled or still to be.
+    private var entrySubmenus: [EntrySubmenu] = []
+    private var fillTimer: Timer?
+
+    /// Fills the submenus one at a time while the menu is open: a timer in
+    /// the run loop's common modes runs during menu tracking, between the
+    /// events, so the menu is on screen first and never waits for them.
+    private func startFilling() {
+        stopFilling()
+        let timer = Timer(timeInterval: 0.002, repeats: true) { _ in
+            MainActor.assumeIsolated { StatusMenu.shared.fillNext() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fillTimer = timer
+    }
+
+    private func stopFilling() {
+        fillTimer?.invalidate()
+        fillTimer = nil
+    }
+
+    private func fillNext() {
+        guard let next = entrySubmenus.first(where: { !$0.filled }) else { return stopFilling() }
+        fill(next)
+    }
+
+    fileprivate func fill(_ entry: EntrySubmenu) {
+        guard !entry.filled else { return }
+        entry.filled = true
+        entry.menu.removeAllItems()
+        if let item = ClipboardHistory.shared.item(entry.id) {
+            _ = actionsMenu(for: item, into: entry.menu)
+        } else {
+            let gone = entry.menu.addItem(withTitle: "No longer in the history", action: nil, keyEquivalent: "")
+            gone.isEnabled = false
+        }
+    }
 
     @objc private func entryPut(_ sender: NSMenuItem) {
         guard let c = sender.representedObject as? EntryContext, ClipboardHistory.shared.copy(c.id) else { return }
@@ -738,7 +830,14 @@ private final class HistoryMenuItemView: NSView {
 
     private var highlighted: Bool { menuItem?.isHighlighted ?? false }
 
+    /// The entries lie on a faint band of the accent colour, and their
+    /// symbols are drawn in it, so they stand apart from the menu's commands.
+    private static let band = NSColor.controlAccentColor.withAlphaComponent(0.12)
+
     override func draw(_ dirtyRect: NSRect) {
+        // Rows touch, so the band runs unbroken down the entries.
+        Self.band.setFill()
+        bounds.insetBy(dx: 5, dy: 0).fill()
         if highlighted {
             NSColor.selectedContentBackgroundColor.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 0), xRadius: 4, yRadius: 4).fill()
@@ -746,7 +845,8 @@ private final class HistoryMenuItemView: NSView {
         let color: NSColor = highlighted ? .selectedMenuItemTextColor : gone ? .tertiaryLabelColor : .labelColor
         let secondary: NSColor = highlighted ? color : .secondaryLabelColor
         if let image {
-            let tinted = image.isTemplate ? image.tinted(color) : image
+            let symbol: NSColor = highlighted || gone ? color : .controlAccentColor
+            let tinted = image.isTemplate ? image.tinted(symbol) : image
             tinted.draw(in: NSRect(x: 14, y: (bounds.height - 16) / 2, width: 16, height: 16),
                         from: .zero, operation: .sourceOver, fraction: gone && !highlighted ? 0.4 : 1)
         }
@@ -779,5 +879,97 @@ private extension NSImage {
             rect.fill(using: .sourceAtop)
             return true
         }
+    }
+}
+
+/// An entry's submenu in the history menu: made empty with the menu, and
+/// filled after it is on screen, or as it is opened, whichever comes first.
+@MainActor
+private final class EntrySubmenu: NSObject, NSMenuDelegate {
+    let id: UUID
+    let menu = NSMenu()
+    var filled = false
+    private weak var owner: StatusMenu?
+
+    init(id: UUID, owner: StatusMenu) {
+        self.id = id
+        self.owner = owner
+        super.init()
+        // Otherwise AppKit enables every item whose target answers its
+        // action, and the isEnabled the commands set would be ignored.
+        menu.autoenablesItems = false
+        // A submenu with nothing in it may not open at all.
+        let waiting = menu.addItem(withTitle: "\u{2026}", action: nil, keyEquivalent: "")
+        waiting.isEnabled = false
+        menu.delegate = self
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) { owner?.fill(self) }
+}
+
+/// What an entry's line and commands need to ask the disk: whether its files
+/// are still there. Asked for all the menu's entries at once, on all cores,
+/// since a file on a slow or vanished volume can keep each answer waiting.
+nonisolated struct EntryFacts: Sendable {
+    var missing: Set<URL> = []
+    var gone = false
+    var imageForText = false
+    var snippet = false
+
+    init(_ item: ClipItem) {
+        missing = Set(item.missingFiles)
+        let urls = item.fileURLs
+        gone = !urls.isEmpty && missing.count == Set(urls).count
+        imageForText = !item.isPassword && (item.kind == .image
+            || (item.kind == .files && item.imageFileURLs.contains { !missing.contains($0) }))
+        snippet = item.pending != true && (item.string != nil || item.kind == .image || (item.kind == .files && !gone))
+    }
+
+    static func gather(_ items: [ClipItem]) -> [UUID: EntryFacts] {
+        let found = OSAllocatedUnfairLock(initialState: [UUID: EntryFacts]())
+        DispatchQueue.concurrentPerform(iterations: items.count) { index in
+            let facts = EntryFacts(items[index])
+            found.withLock { $0[items[index].id] = facts }
+        }
+        return found.withLock { $0 }
+    }
+}
+
+/// A menu line that must not be overlooked: bold black text on a band of
+/// harsh yellow, darker under the pointer. A click does what the item does.
+private final class AlertMenuItemView: NSView {
+    private weak var menuItem: NSMenuItem?
+    private let title: String
+    private static let font = NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
+    private static let yellow = NSColor(srgbRed: 1, green: 0.84, blue: 0, alpha: 1)
+    private static let darker = NSColor(srgbRed: 0.95, green: 0.68, blue: 0, alpha: 1)
+
+    init(menuItem: NSMenuItem) {
+        self.menuItem = menuItem
+        title = menuItem.title
+        let width = NSAttributedString(string: title, attributes: [.font: Self.font]).size().width + 44
+        super.init(frame: NSRect(x: 0, y: 0, width: max(width, 220), height: 26))
+        autoresizingMask = [.width]
+        toolTip = menuItem.toolTip
+        setAccessibilityRole(.menuItem)
+        setAccessibilityLabel(title)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let highlighted = menuItem?.isHighlighted ?? false
+        (highlighted ? Self.darker : Self.yellow).setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 2), xRadius: 5, yRadius: 5).fill()
+        let text = NSAttributedString(string: title, attributes: [.font: Self.font, .foregroundColor: NSColor.black])
+        let size = text.size()
+        text.draw(at: NSPoint(x: 14, y: (bounds.height - size.height) / 2))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let menuItem, let action = menuItem.action else { return }
+        menuItem.menu?.cancelTracking()
+        NSApp.sendAction(action, to: menuItem.target, from: menuItem)
     }
 }

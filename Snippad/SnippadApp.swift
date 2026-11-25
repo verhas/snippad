@@ -79,6 +79,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             StatusMenu.shared.settingsChanged()
             ClipboardHistory.shared.startMonitoring()  // follows the poll interval
             PasteInterceptor.update()
+            ClipboardHistory.shared.readImageTexts()  // the languages may have changed
+            ClipboardHistory.shared.classifyEntries()  // or classifying was switched on
+            ClipboardHistory.shared.reconcileFiles()  // Never Public apps, classifying off
         }
         // Not from inside the tap's own callback, hence async.
         let updateTap = { DispatchQueue.main.async { MainActor.assumeIsolated { PasteInterceptor.update() } } }

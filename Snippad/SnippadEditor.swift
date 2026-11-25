@@ -32,6 +32,8 @@ final class SnippetDraft: Identifiable {
     /// Where the button sits in its window, and its size; nil is automatic.
     var origin: SnippetPoint?
     var size: SnippetSize?
+    /// Public, Sensitive, Private or Secret; nil is not set.
+    var classification: ClipCategory?
 
     init(name: String = "", value: String = "", expires: Int? = nil, once: Bool = false, password: Bool = false,
          list: String? = nil, kind: SnippetKind = .text, color: String = SnippetColors.random()) {
@@ -91,6 +93,7 @@ final class SnippadEditorModel {
             d.iconCorner = $0.iconCorner
             d.origin = $0.origin
             d.size = $0.size
+            d.classification = $0.classification
             return d
         }
         for (snippet, draft) in zip(snippets, drafts) {
@@ -109,6 +112,7 @@ final class SnippadEditorModel {
                                   password: draft.password, list: draft.list, kind: draft.kind, shortcut: draft.shortcut,
                                   edits: draft.kind == .image ? draft.edits : nil, color: draft.color, icon: draft.icon,
                                   iconCorner: draft.iconCorner, origin: draft.origin, size: draft.size)
+            snippet.classification = draft.classification
             if let nextID = draft.nextID, let target = drafts.first(where: { $0.id == nextID }) {
                 guard drafts.filter({ $0.name == target.name }).count == 1 else {
                     throw SnippadParseError(line: 0, message: "Several snippets are named \u{201C}\(target.name)\u{201D}, and \u{201C}\(draft.name)\u{201D} chains to one of them. Chain targets need a name of their own.")
@@ -125,7 +129,8 @@ final class SnippadEditorModel {
             [d.name, d.value, d.expires.map(String.init) ?? "", d.once ? "1" : "0", d.password ? "1" : "0",
              d.nextID.flatMap { id in drafts.first { $0.id == id }?.name } ?? "", d.list ?? "", d.kind.rawValue,
              d.shortcut ?? "", String(d.editsVersion), d.color, d.icon ?? "", d.iconCorner.rawValue,
-             d.origin.map { "\($0.x),\($0.y)" } ?? "", d.size.map { "\($0.width)x\($0.height)" } ?? ""].joined(separator: "\u{0}")
+             d.origin.map { "\($0.x),\($0.y)" } ?? "", d.size.map { "\($0.width)x\($0.height)" } ?? "",
+             d.classification?.rawValue ?? ""].joined(separator: "\u{0}")
         }
     }
 
@@ -229,6 +234,7 @@ final class SnippadEditorModel {
         let copy = SnippetDraft(name: uniqueName(d.name), value: d.value, expires: d.expires, once: d.once,
                                 password: d.password, list: d.list, kind: d.kind, color: d.color)
         copy.nextID = d.nextID
+        copy.classification = d.classification
         copy.edits = d.edits
         copy.icon = d.icon
         copy.iconCorner = d.iconCorner
@@ -346,6 +352,11 @@ private struct DraftRow: View {
 
     var body: some View {
         HStack {
+            // Its classification's colour; a password is Secret.
+            if let category = draft.classification ?? (draft.password ? .secret : nil) {
+                Circle().fill(Color(nsColor: category.color)).frame(width: 8, height: 8)
+                    .help("\(category.name): \(category.explanation)")
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(draft.name.isEmpty ? "(no name)" : draft.name)
                     .foregroundStyle(draft.name.isEmpty ? .secondary : .primary)
@@ -474,8 +485,8 @@ struct SnippetDetail: View {
     private func valueEditor(lineNumbers: LineNumberMode) -> some View {
         TextEditorView(documentID: draft.id, text: draft.value, rich: nil, editable: true, lineNumbers: lineNumbers,
                        wrap: settings.value.wordWrap, controller: editor,
-                       onCopy: { [list = draft.list, password = draft.password] in
-                           ClipboardHistory.shared.captureOwnCopy(list: list, password: password)
+                       onCopy: { [list = draft.list, password = draft.password, category = draft.classification] in
+                           ClipboardHistory.shared.captureOwnCopy(list: list, password: password, category: category)
                        },
                        concealCopies: draft.password) { plain, _ in
             draft.value = plain
@@ -550,6 +561,18 @@ private struct DraftForm<ValueEditor: View>: View {
                     }
                 }
                 .help("The history list the value is recorded in when copied; that list's Paste Guard rules apply to it")
+                Picker("Classification", selection: $draft.classification) {
+                    Text(draft.password ? "Not set (a password is Secret)" : "Not set (classified when copied)").tag(ClipCategory?.none)
+                    ForEach(ClipCategory.allCases) { category in
+                        Label {
+                            Text(category.name)
+                        } icon: {
+                            Image(systemName: "circle.fill").foregroundStyle(Color(nsColor: category.color))
+                        }
+                        .tag(Optional(category))
+                    }
+                }
+                .help("Copied, the value is at least this in the history -- classified as well, the more careful category stands. Sensitive, Private and Secret ask before pasting and are not kept on disk.")
                 LabeledContent("Shortcut") {
                     ShortcutRecorder(draft: draft, fileURL: model.url)
                 }

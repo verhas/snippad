@@ -109,6 +109,7 @@ final class ImageEditTests: XCTestCase {
         let pasteboard = NSPasteboard(name: .init("SnippadImageEditTests-\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         let settings = SettingsStore(url: nil)
+        settings.value.classifyEntries = false  // its files are what is tested
         let engine = PasteEngine()
         engine.pasteboard = pasteboard
         let history = ClipboardHistory(directory: directory, pasteboard: pasteboard, settings: settings, engine: engine)
@@ -449,6 +450,7 @@ final class ImageEditTests: XCTestCase {
         let pasteboard = NSPasteboard(name: .init("SnippadImageObjectsList-\(UUID().uuidString)"))
         defer { pasteboard.releaseGlobally() }
         let settings = SettingsStore(url: nil)
+        settings.value.classifyEntries = false  // its files are what is tested
         let engine = PasteEngine()
         engine.pasteboard = pasteboard
         let history = ClipboardHistory(directory: directory, pasteboard: pasteboard, settings: settings, engine: engine)

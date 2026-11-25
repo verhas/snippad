@@ -178,6 +178,9 @@ final class SnippadLibrary {
             guard let text = item.string else { throw ClipboardError("This kind of entry cannot become a snippet.") }
             added.append(m.append(name: Self.name(for: item, text: text), value: text, password: item.isPassword, list: list))
         }
+        // The entry's category goes with it.
+        let category = item.category(in: SettingsStore.shared.value)
+        for d in added { d.classification = category }
         guard m.save() else {
             for d in added { m.remove(d.id) }
             throw ClipboardError(m.problem ?? "The file could not be saved.")
@@ -201,6 +204,7 @@ final class SnippadLibrary {
         let copy = to.append(name: d.name, value: d.value, password: d.password, list: d.list, kind: d.kind)
         copy.expires = d.expires
         copy.once = d.once
+        copy.classification = d.classification
         copy.edits = d.edits
         copy.color = d.color
         copy.icon = d.icon

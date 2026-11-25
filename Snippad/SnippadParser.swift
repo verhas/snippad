@@ -50,6 +50,10 @@ struct Snippet: Identifiable, Equatable, Sendable {
     var origin: SnippetPoint? = nil
     /// The button's size; nil is what its name needs.
     var size: SnippetSize? = nil
+    /// Public, Sensitive, Private or Secret, as the user set it (or as the
+    /// history entry it was made from was); nil is not set. Copied, it is
+    /// the least its history entry is.
+    var classification: ClipCategory? = nil
 }
 
 /// A corner of a snippet's button, where its icon sits.
@@ -260,6 +264,13 @@ private struct Reader {
             var snippet = Snippet(id: index, name: name, value: value)
             snippet.next = try string("next")
             snippet.list = try string("list").flatMap { $0.isEmpty ? nil : $0 }
+            if let text = try string("classification"), !text.isEmpty {
+                guard let category = ClipCategory(rawValue: text.lowercased()) else {
+                    throw SnippadParseError(line: fields["classification"]!.line,
+                                            message: "'classification' must be \"public\", \"sensitive\", \"private\" or \"secret\"")
+                }
+                snippet.classification = category
+            }
             if let text = try string("shortcut"), !text.isEmpty {
                 guard let shortcut = KeyShortcut(text), shortcut.isUsable else {
                     throw SnippadParseError(line: fields["shortcut"]!.line,

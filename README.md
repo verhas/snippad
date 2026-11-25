@@ -26,13 +26,16 @@ These shortcuts, and ⇧⌘H for the Organizer, are the defaults; each can be ch
 - Choose an entry to put it back on the clipboard, in all the formats it was copied in.
   Keys **1**–**9** and **0** pick the first ten.
 - **Pinned** entries are listed first and stay when the history is cleared or trimmed.
-- The first list's entries are in the menu itself; every other list is a submenu (see [Lists](#lists)).
+- The first list's entries are in the menu itself; every other list is a submenu under the **Lists** header (see [Lists](#lists)).
+- Each list shows its 25 newest entries (*Settings > General > Clipboard history*, 10 to 50).
+  A longer list ends in **Show All *n* Entries…**, which opens the [⇧⌘V window](#the-v-window) on that list, to scroll through or search all of it.
 - Every entry has its own submenu (the **›**), which opens when you rest the pointer on the entry or press **→**.
   It shows the entry in more detail -- the start of the text or the file paths, where and when it was copied, its list -- and its commands:
   - **Put on Clipboard** -- as when you click the entry.
   - **Paste** -- puts the entry's main form on the clipboard (plain text, rich text, the image, the files) and pastes it into the app in front.
   - **Paste as Rich Text** -- for entries that have rich text: the formatted text only.
   - **Paste as Markdown** -- for rich text: the formatting written as Markdown (headings, bold, italic, strikethrough, code, links, lists), pasted as plain text.
+  - **Paste as Text** -- for images whose text has been read (see [Text in images](#text-in-images)): that text, pasted as plain text.
   - **Paste Original** -- every format it was copied in, then pastes.
   - **Pin**, **Rename…**, **Move to List ▸**, **Delete**.
     A renamed entry shows its name instead of its first line, everywhere, and search finds it by its name.
@@ -44,8 +47,10 @@ These shortcuts, and ⇧⌘H for the Organizer, are the defaults; each can be ch
   The three Paste commands paste for you, which needs the Accessibility permission; without it the entry is just put on the clipboard.
   Whatever form goes on the clipboard, the entry stays the one of record, so its list's Paste Guard rules apply.
   The history menu stays open beside it, so you see what you are about to delete.
+  The submenus are made after the menu is on screen, one by one ahead of the pointer (one you open first is made at once), so the menu opens at once however long the history.
   (A right-click menu is not possible here: macOS does not open a second menu while one is tracking.)
   Menus cannot be dragged from or dropped on either, so moving by drag and drop is in the Organizer.
+- The entries stand on a faint band of the system accent colour, set apart from the commands; their symbols are drawn in that colour.
 - Passwords show as `name: ••••••••`, never their value.
 - **Snippets** lists the open `.snippad` files, with their snippets.
 - **Record Clipboard History** pauses and resumes recording; below it, how many entries the history holds and what they take on disk.
@@ -53,7 +58,10 @@ These shortcuts, and ⇧⌘H for the Organizer, are the defaults; each can be ch
 - **Paste Guard** switches the [Paste Guard](#the-paste-guard) on and off.
 - **Settings…** (⌘,) opens the [settings window](#settings).
 
-The history is kept in `~/Library/Application Support/Snippad/History`, one file per entry, readable only by you.
+The history is kept in `~/Library/Application Support/Snippad/History`, one binary property list per entry, readable only by you.
+There is no database: at startup every file is read into memory, and a change rewrites only its entry's file.
+Only [Public](#classification) entries are on disk: Sensitive, Private and Secret ones are kept in memory only, and are gone when Snippad quits.
+Text copied as HTML only is turned into formatted text in the background (WebKit does that, and it once kept Snippad waiting for good); until then it shows as plain text.
 Not recorded:
 
 - copies larger than 50 MB;
@@ -76,6 +84,7 @@ The result is a new text entry in the same list, and it goes on the clipboard.
 ### The ⇧⌘V window
 
 **⇧⌘V** opens a small window by the mouse pointer with the entries of the preferred list (pinned first), and a search field.
+**Show All *n* Entries…** at the end of a list in the menu bar opens the same window on that list.
 The app you were in is known from the moment you press ⇧⌘V, and its name is in the window's top right corner.
 With the Paste Guard on, entries of lists that may not be pasted into that app are left out, and a line says how many; so whatever is offered can be pasted.
 When the preferred list is All Lists, each entry shows its list beside its source application and time.
@@ -117,9 +126,12 @@ A copy gets a name of its own if the file already has one like it, and keeps its
 The last snippet of a file is only copied, since a file needs one.
 
 **Drag entries and snippets into other apps**, too: text into a text field, rich text into a document, an image into a mail or onto the desktop, copied files into a Finder window (Finder makes copies; the originals stay where they are).
+An image arrives as a PNG file named after the entry -- in Finder, in Diptych, in any app that takes a promised file.
 From macOS 26 every selected entry, and every file of an entry, arrives as an item of its own; on macOS 15 a drag into another app carries the one entry dragged, and an entry's first file.
 A drop is not a paste, so what has paste rules stays inside Snippad -- it still drags onto lists and files, but not into other apps: passwords, entries of lists with Paste Guard rules, and snippets that are pasted once, expire, chain to another or go to such a list.
 Entries still shown afterwards (in All Lists, say) stay selected.
+
+**Hold ⌥** and each entry shows the exact time it was copied (`2026-11-11 10:22:03CET`) instead of "3 days ago", and its application becomes a link: a click switches to the application when it runs with a window on screen, and otherwise shows it in its folder in Finder.
 With several selected, the right pane and the right-click menu offer Copy Together, Move to List, Pin, Unpin and Delete for all of them.
 **Deleting can be undone**: **Undo Delete** in the toolbar, or ⌘Z in the list, brings back what was deleted last -- one entry, several, or a whole Clear Unpinned -- for five minutes. Deleted entries are kept in memory only; after five minutes, or when Snippad quits, they are gone.
 The search field finds text, file paths, snippet names, source applications, and the **EXIF, TIFF, GPS and IPTC metadata** of copied images and of copied image files: search for a camera model, a lens, or a date.
@@ -299,7 +311,7 @@ In the snippet editor, check **Password** for a snippet whose value is secret.
 Its value is then shown as `••••••••` everywhere -- in the menu bar, the ⇧⌘V window, the Organizer's lists and its view pane, the snippet list, tooltips -- concealed from other clipboard managers, and never returned by the MCP tools.
 There are two ways to see it: the eye in the snippet editor, and **Edit** on its entry in the Organizer.
 Only snippets can be passwords: nothing copied elsewhere is treated as one.
-A password entry in the history is still stored on disk in your history folder, as the snippet itself is in its `.snippad` file.
+A password entry in the history is Secret, so it is never written to your history folder: it lives in memory until Snippad quits. The snippet itself stays in its `.snippad` file.
 
 ### The Paste Guard
 
@@ -328,6 +340,68 @@ How Snippad tells a private window:
 Only ⌘V (with or without ⇧ and ⌥) is checked.
 Paste from an Edit menu, a context menu, or drag and drop is not.
 
+### Text in images
+
+Snippad reads the text of every image you copy, in the background, one image at a time, on your Mac with Apple's Vision framework (the engine behind Live Text): no download, no network.
+When it is done the entry has **Paste as Text** in its submenu, and the text counts for its [classification](#classification).
+An edited image is read again; so is every image when the languages change.
+It reads in the Mac's preferred languages that Vision knows (*System Settings > General > Language & Region*); Vision guessing the language instead reads some screenshots of English as Chinese.
+Hungarian, for one, is not among them: Hungarian text is read as English, and its accented letters may lose their accents.
+Both are switches in *Settings > General > Text in images*; **Extract Text** works either way.
+
+### Classification
+
+Every entry is classified in the background, newest first:
+
+| Category      | What                                                                                     | Colour |
+| ------------- | ---------------------------------------------------------------------------------------- | ------ |
+| **Public**    | everything else: code, documentation, ordinary text, links                               | green  |
+| **Sensitive** | personal data: names with contact details, addresses, phone numbers, account and card numbers, ID numbers | orange |
+| **Private**   | rude words, insults, sexual content -- what a censored language model refuses             | purple |
+| **Secret**    | passwords, API keys, tokens, private keys, recovery codes                                 | red    |
+
+Rules come first: keys and tokens of known shapes, private keys and `password:` lines are Secret; IBANs and card numbers whose check digits are right, Hungarian account numbers, postal addresses and phone numbers are Sensitive.
+Then Apple Intelligence -- the model on your Mac, never Private Cloud Compute -- reads the entry (an image: the text read from it); when the two differ, the more careful category stands.
+A text the model refuses to handle is Private.
+Without Apple Intelligence (macOS 26 or later, switched on in *System Settings*) only the rules classify, and nothing becomes Private; entries are classified again once it is there.
+Password snippets are Secret from the start. Files, colours and other data are not classified.
+
+**Snippets** have a classification of their own, set in the snippet editor and kept in the `.snippad` file (`classification`).
+Copied, a snippet's history entry is at least that: a Sensitive snippet asks before it is pasted and its copies stay off the disk, like any Sensitive entry.
+**Add to Snippad** -- and dropping entries on a file in the sidebar -- gives the new snippet the entry's category; copying or moving a snippet to another file takes it along.
+
+**Copied from an entry.**
+What is made from an entry -- a part copied with ⌘C in the Organizer, its text (**Extract Text**), its file names or paths, objects copied in the image editor, several entries copied together -- inherits the category of what it was made from: it is classified on its own as well, and the more careful of the two stands.
+A Public entry passes nothing on. The tooltip and the paste question say when an entry counts as more because of where it came from.
+
+**On disk.**
+Only Public entries are written to disk.
+A Sensitive, Private or Secret entry lives in memory only and is gone when Snippad quits; when an entry becomes one -- classified, set by you, or from an application made Never Public -- its file is deleted at once, and set back to Public it is written again.
+While classifying is on, a new entry is written once it is classified, about a second after the copy, so what turns out Sensitive never touches the disk; were Snippad to quit within that second, the entry would be lost.
+An entry already on disk that is not classified yet is left there until it is.
+
+**Never Public.**
+What is copied in a private browser window (where Snippad can tell, see the [Paste Guard](#the-paste-guard)), or from an application switched to **Never Public** in *Settings > Applications* -- a chat app, IRC -- is classified like anything else, but a Public result counts as Private; Sensitive and Secret stay what they are.
+Until it is classified, such an entry counts as Private.
+The setting applies at once, to what was copied from the application before as well.
+
+In the Organizer the icon of an entry has its category's colour (a picture or a file icon gets a dot); its tooltip says whether rules, Apple Intelligence or you decided.
+**Right-click › Classification** sets it yourself, for one entry or several; **Automatic** gives it back to Snippad.
+
+**Asking before pasting.**
+For each category, *Settings > General > Classification* can make pasting and exporting ask first -- on for Sensitive, Private and Secret, off for Public.
+A ⌘V of such an entry, or Paste from Snippad's menus, opens a question with four answers: **Paste**, **Don't Paste** (Escape), **Don't Paste, and Delete It**, and **Paste, and Delete It**.
+Deleting takes the entry off the clipboard and out of the history; **Undo Delete** brings it back for five minutes.
+A copy made a moment ago that is not classified yet is judged by the rules alone.
+**Exporting.**
+The same categories ask before they are exported.
+**Export…** of one entry asks as pasting does: **Export**, **Don't Export**, **Don't Export, and Delete It**, **Export, and Delete It** (deleted once the file is written).
+Exporting a list (TOML, XML, JSON, YAML) says how many of its entries are of which category, and offers **Export Without Them**, **Export All** or **Don't Export**.
+
+**Paste Without Asking**, per application in *Settings > Applications*, lets chosen categories into that application without the question -- each on its own: letting Private into a chat app does not let Secret in.
+In other apps this needs the [keyboard tap](#the-keyboard-tap), held only while such an entry is on the clipboard.
+Classifying, too, can be switched off; categories you set yourself still count.
+
 ## Settings
 
 **Settings…** opens a window with three tabs:
@@ -335,9 +409,11 @@ Paste from an Edit menu, a context menu, or drag and drop is not.
 - **General** -- first, the main switch, **Record Clipboard History**; then:
   - how many unpinned entries each list keeps, and how old they may get (a day to a year, or no limit) -- Snippad asks before an age limit deletes entries at once; pinned entries are always kept;
   - what the history takes on disk, with **Show in Finder**;
+  - how many entries of each list the menu bar menu shows (25 by default), before **Show All *n* Entries…**;
   - *Paste after choosing*;
   - **Shortcuts**: the history menu (⌃⌘V), the picker (⇧⌘V) and the Organizer (⇧⌘H), each on or off, and changed by clicking it and pressing the new keys (**Default** brings the original back); a clash with another of them, or with a snippet's shortcut, or keys macOS would not give Snippad, is pointed out;
   - **Sounds**: one of macOS's alert sounds when Snippad puts something on the clipboard (and, if you like, when you copy in another app), and one when it pastes for you; none by default;
+  - [text in images](#text-in-images) and [classification](#classification), with asking before pasting each category;
   - [screenshots](#screenshots), [copies from other devices](#copies-from-iphone-ipad-and-other-macs), *Open Snippad at login*, the permissions, and the MCP setup command.
 - **Applications** -- every installed application and every application something was copied from, with how many copies it made.
   Switch **Record** off to keep an application's copies out of the history; pick the **List** its copies go to.
@@ -401,6 +477,7 @@ So Snippad installs its tap only while something needs it:
 | -------------------------------------------------- | -------------------------------------------------------------------- |
 | the Paste Guard is on **and** the clipboard holds something from a restricted list | something from an unrestricted list is copied, the entry is moved to an unrestricted list, the list's restrictions are removed, or the Paste Guard is switched off |
 | a paste-once or chained value waits on the clipboard | the last step is pasted, it expires, the clipboard is cleared, or anything else is copied |
+| the clipboard holds an entry of a category pasting asks about (Sensitive, Private and Secret by default) | something of another category is copied, the entry is classified or set otherwise, or asking is switched off for it |
 
 A list is *restricted* when it allows only some applications, denies at least one, or is for private browser windows only.
 "Something from a list" includes copies that were not recorded -- from an excluded application, or marked concealed -- since the source application's list still applies to them.
@@ -429,7 +506,7 @@ Double-click a `.snippad` file elsewhere in Finder (or better in Diptych), or us
 It stays listed -- also after Snippad restarts -- until you close it with the **eject** button beside it.
 Files in `~/.snippad` have no eject button: they are always open.
 
-**Right-click** a file in the sidebar and choose **Open Window** for its window of buttons, titled with the file name, with one button per snippet.
+**Double-click** a file in the sidebar, or right-click it and choose **Open Window**, for its window of buttons, titled with the file name, with one button per snippet.
 Closing that window does not close the file.
 The windows open when Snippad quits open again when it starts.
 
@@ -457,7 +534,7 @@ Select a file under **Snippad Files** in the Organizer's sidebar.
 The middle column lists its snippets in file order (drag to reorder; **New Snippet** and **−** below add and remove; Return puts one on the clipboard), and the right pane edits the selected one.
 Right-click a snippet, or the file in the sidebar, for **New Snippet** too.
 **Edit Snippets…** (⌘E) brings you there from a button window.
-There you set its name, its value, whether it is a **Password** (hidden until you click the eye), the **list its copies go to** (default *Clipboard*), and what happens on the clipboard:
+There you set its name, its value, whether it is a **Password** (hidden until you click the eye), the **list its copies go to** (default *Clipboard*), its **Classification** (a coloured dot in the snippet list; a password counts as Secret), and what happens on the clipboard:
 
 - **Remove from the clipboard after it is pasted once.**
 - **Remove from the clipboard after** a time, such as `30s`, `5m` or `1h30m`.
@@ -499,7 +576,7 @@ The editor regenerates the file: the comment block at the top survives, other co
 macOS does not tell anyone when something is pasted, and reading the clipboard does not count: IDEs, Universal Clipboard and other clipboard managers read every change within a fraction of a second.
 So Snippad counts a paste when you type **⌘V** (or ⇧⌘V, ⌥⇧⌘V) while its value is on the clipboard, or when it pastes for you.
 To see ⌘V it installs a keyboard tap for as long as the value waits, and removes it afterwards (see [The keyboard tap](#the-keyboard-tap)).
-Seeing keystrokes in other apps needs the [Accessibility permission](#permissions); the menu bar shows a warning with a link while it is missing.
+Seeing keystrokes in other apps needs the [Accessibility permission](#permissions); the menu bar icon turns into a warning triangle, and the menu has a line in harsh yellow, **⚠︎ Allow Accessibility so Snippad Sees ⌘V…**, that leads to System Settings, while it is missing.
 Paste from an Edit menu or a context menu is not noticed.
 
 Paste-once, chained and password values are marked concealed and transient, so other clipboard managers leave them out of their histories.
@@ -562,6 +639,7 @@ height = 48
 | `next`    | The `name` of another snippet in the same file. Each snippet in a chain keeps its own rules. |
 | `kind`    | `"text"` (the default), `"rich"` (`value` is RTF), `"file"` (`value` is a path), or `"image"` (`value` is a base64 PNG). |
 | `list`    | The name of the history list its copies go to; left out, the first list (*Clipboard*).     |
+| `classification` | `"public"`, `"sensitive"`, `"private"` or `"secret"`: copied, its history entry is at least that (see [Classification](#classification)). Left out: not set, and a copy is classified as any other. |
 | `shortcut`| A system-wide shortcut that copies it, such as `"ctrl+opt+s"` or `"f5"`: `ctrl`, `opt`, `shift`, `cmd` and a key, joined by `+`. |
 | `color`   | The button's colour, `"#RRGGBB"`. Left out, a colour picked from the name, the same every time; Snippad writes it when it saves the file. |
 | `icon`    | An SF Symbol name, such as `"star.fill"`, shown in a corner of the button.                |
@@ -765,7 +843,8 @@ xcrun notarytool store-credentials Snippad --apple-id <Apple ID> --team-id <Team
 |                                      |                                                                            |
 | `Snippad/OrganizerDrag.swift`        | Dragging entries and snippets into other apps.                             |
 |                                      |                                                                            |
-| `Snippad/TextRecognition.swift`      | Text and QR codes in images, with Vision.                                  |
+| `Snippad/TextRecognition.swift`      | Text and QR codes in images, with Vision; the background reader.           |
+| `Snippad/Classification.swift`       | Public, Sensitive, Private, Secret: rules, Apple Intelligence, asking before a paste. |
 |                                      |                                                                            |
 | `Snippad/ImageEdits.swift`           | An edited image: the original, its layers and crop, and drawing the result. |
 |                                      |                                                                            |

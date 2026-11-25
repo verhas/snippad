@@ -34,6 +34,9 @@ enum SnippadWriter {
             if let list = snippet.list {
                 out += "list = \(quoted(list))\n"
             }
+            if let classification = snippet.classification {
+                out += "classification = \(quoted(classification.rawValue))\n"
+            }
             if let shortcut = snippet.shortcut {
                 out += "shortcut = \(quoted(shortcut))\n"
             }

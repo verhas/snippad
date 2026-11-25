@@ -18,13 +18,14 @@ enum PickerPanel {
         if let panel, panel.isVisible { close() } else { show() }
     }
 
-    static func show() {
+    /// - Parameter list: the list to show; nil shows the preferred list.
+    static func show(list: String? = nil) {
         let panel = Self.panel ?? make()
         Self.panel = panel
         let front = NSWorkspace.shared.frontmostApplication
         target = front?.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : front
         let allowed = PasteGuard.allowedLists(into: target, settings: SettingsStore.shared.value)
-        panel.contentViewController = NSHostingController(rootView: PickerView(target: target, allowedLists: allowed, close: close))
+        panel.contentViewController = NSHostingController(rootView: PickerView(target: target, allowedLists: allowed, shownList: list, close: close))
         panel.setContentSize(NSSize(width: 420, height: 460))
         // Near the mouse, on its screen.
         let mouse = NSEvent.mouseLocation
@@ -98,6 +99,8 @@ private struct PickerView: View {
     /// Lists the Paste Guard lets into the target; entries of the others are
     /// not offered.
     let allowedLists: Set<String>
+    /// The list asked for; nil means the preferred list.
+    var shownList: String?
     let close: () -> Void
     @State private var history = ClipboardHistory.shared
     @State private var settings = SettingsStore.shared
@@ -107,7 +110,7 @@ private struct PickerView: View {
     @State private var marked: [UUID] = []
     @FocusState private var searchFocused: Bool
 
-    private var listID: String? { settings.value.preferredList }
+    private var listID: String? { shownList ?? settings.value.preferredList }
 
     private var hiddenCount: Int {
         history.items.filter { (listID == nil || $0.list == listID) && !allowedLists.contains($0.list) }.count
@@ -115,7 +118,7 @@ private struct PickerView: View {
 
     private var entries: [ClipItem] {
         let found = history.search(query, list: listID).filter { !$0.filesGone && allowedLists.contains($0.list) }
-        return Array((found.filter(\.pinned) + found.filter { !$0.pinned }).prefix(200))
+        return Array((found.filter(\.pinned) + found.filter { !$0.pinned }).prefix(5000))
     }
 
     var body: some View {

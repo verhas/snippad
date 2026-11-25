@@ -2533,6 +2533,14 @@ struct ImageEditorHost: View {
             Color.clear.onAppear {
                 model = ImageEditorModel(edits: edits, onChange: onChange)
                 failed = model == nil
+                // Objects copied out of a history image inherit its category.
+                if case .history(let id) = target {
+                    model?.putOnClipboard = { types, label in
+                        ClipboardHistory.shared.inheriting(from: [id]) {
+                            ClipboardHistory.shared.addImageObjects(types, label: label)
+                        }
+                    }
+                }
             }
         }
     }

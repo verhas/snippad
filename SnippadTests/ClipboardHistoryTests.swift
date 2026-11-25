@@ -18,6 +18,9 @@ final class ClipboardHistoryTests: XCTestCase {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("History-\(UUID().uuidString)")
         pasteboard = NSPasteboard(name: .init("SnippadHistoryTests-\(UUID().uuidString)"))
         settings = SettingsStore(url: nil)
+        // These tests are about the history and its files; classifying, which
+        // holds new entries back from disk until it is done, has tests of its own.
+        settings.value.classifyEntries = false
         engine = PasteEngine()
         engine.pasteboard = pasteboard
         history = ClipboardHistory(directory: directory, pasteboard: pasteboard, settings: settings, engine: engine)
@@ -270,6 +273,45 @@ final class ClipboardHistoryTests: XCTestCase {
         let made = try history.extractTextNow(from: history.items[0].id)
         XCTAssertEqual(made?.string, "https://example.com/snippad")
         XCTAssertEqual(pasteboard.string(forType: .string), "https://example.com/snippad")
+    }
+
+    /// An image copied is read in the background; once read, the entry has
+    /// its text and Paste as Text puts that text on the clipboard. An edit
+    /// makes the old text stale until the picture is read again.
+    func testACopiedImageIsReadInTheBackgroundAndPastesAsText() async throws {
+        func qr(_ text: String) throws -> Data {
+            let filter = try XCTUnwrap(CIFilter(name: "CIQRCodeGenerator"))
+            filter.setValue(Data(text.utf8), forKey: "inputMessage")
+            let code = try XCTUnwrap(filter.outputImage).transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+            let rep = NSCIImageRep(ciImage: code)
+            let image = NSImage(size: rep.size)
+            image.addRepresentation(rep)
+            return try XCTUnwrap(NSBitmapImageRep(data: XCTUnwrap(image.tiffRepresentation))?.representation(using: .png, properties: [:]))
+        }
+        func readText(of id: UUID) async -> String? {
+            // Vision loads its model the first time: a minute, on a busy Mac.
+            for _ in 0..<900 {
+                if let text = history.item(id)?.textOfImage { return text }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            return nil
+        }
+        pasteboard.clearContents()
+        pasteboard.setData(try qr("https://example.com/first"), forType: .png)
+        history.poll()
+        let id = history.items[0].id
+        XCTAssertTrue(history.items[0].needsTextReading(in: nil))
+        let first = await readText(of: id)
+        XCTAssertEqual(first, "https://example.com/first")
+
+        XCTAssertTrue(history.put(id, as: .textOfImage))
+        XCTAssertEqual(pasteboard.string(forType: .string), "https://example.com/first")
+
+        let edited = try qr("https://example.com/second")
+        history.updateImage(id, png: edited, edits: ImageEdits(original: edited))
+        XCTAssertNil(history.item(id)?.textOfImage, "the text of the picture before the edit")
+        let second = await readText(of: id)
+        XCTAssertEqual(second, "https://example.com/second")
     }
 
     func testNothingIsPutForVanishedFilesSoNothingStaleIsPasted() throws {

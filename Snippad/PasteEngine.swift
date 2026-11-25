@@ -29,11 +29,14 @@ struct PasteRules: Equatable, Sendable {
     /// The history list the value is recorded in, by name or id; nil is the
     /// default list.
     var list: String?
+    /// The least category its history entry has: the snippet's.
+    var category: ClipCategory?
     /// Put this on the clipboard once the value has been pasted.
     var next: (@MainActor @Sendable () -> (types: [String: Data], name: String, rules: PasteRules)?)?
 
     static func == (a: PasteRules, b: PasteRules) -> Bool {
         a.expires == b.expires && a.once == b.once && a.password == b.password && a.list == b.list
+            && a.category == b.category
             && (a.next == nil) == (b.next == nil)
     }
 
@@ -44,7 +47,7 @@ extension Snippet {
     /// The rules of this snippet, with `next` looked up among the snippets of
     /// the same file.
     func rules(in all: [Snippet]) -> PasteRules {
-        var rules = PasteRules(expires: expires, once: once, password: password, list: list)
+        var rules = PasteRules(expires: expires, once: once, password: password, list: list, category: classification)
         if let nextName = next, let target = all.first(where: { $0.name == nextName }) {
             rules.next = { (target.pasteboardTypes, target.name, target.rules(in: all)) }
         }
@@ -158,6 +161,7 @@ final class PasteEngine {
         entry.label = name
         entry.password = rules.password ? true : nil
         entry.listID = rules.list
+        entry.inheritedCategory = rules.category == .general ? nil : rules.category
         recorder?(entry)
         onStateChange?()
         SnippadSound.copied()

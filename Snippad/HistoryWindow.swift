@@ -336,6 +336,10 @@ private struct HistoryView: View {
                     .help("Close this file (it is not in ~/.snippad, so it is listed only while open)")
             }
         }
+        .contentShape(Rectangle())
+        // A double click opens its window, as Open Window does; the single
+        // click still selects it.
+        .simultaneousGesture(TapGesture(count: 2).onEnded { library.open(url) })
         .tag(SidebarItem.file(url))
         .listRowBackground(dropTarget == key ? Color.accentColor.opacity(0.25) : nil)
         // History entries dropped here become snippets, as Add to Snippad
@@ -665,10 +669,49 @@ private struct ItemsActions: View {
                 copyTogether(history.items.filter { ids.contains($0.id) }.map(\.id))
             }
             .disabled(!items.contains { $0.isEditableText })
+            ClassificationMenu(items: items)
             Button("Pin \(items.count) Entries") { for item in items { history.setPinned(item.id, true) } }
             Button("Unpin \(items.count) Entries") { for item in items { history.setPinned(item.id, false) } }
             Divider()
             Button("Delete \(items.count) Entries", role: .destructive) { history.delete(undoably: items.map(\.id)) }
+        }
+    }
+}
+
+/// Right-click › Classification: the user's category for the entries, or
+/// Automatic -- the one Snippad found.
+private struct ClassificationMenu: View {
+    let items: [ClipItem]
+    private var history: ClipboardHistory { .shared }
+
+    var body: some View {
+        let chosen = Set(items.map(\.userCategory))
+        Menu("Classification") {
+            Button {
+                history.setUserCategory(nil, of: items.map(\.id))
+            } label: {
+                let found: ClipCategory? = items.count == 1 ? {
+                    var automatic = items[0]
+                    automatic.userCategory = nil
+                    return automatic.category(in: SettingsStore.shared.value)
+                }() : nil
+                let title = "Automatic" + (found.map { " (\($0.name))" } ?? "")
+                if chosen == [nil] { Label(title, systemImage: "checkmark") } else { Text(title) }
+            }
+            Divider()
+            ForEach(ClipCategory.allCases) { category in
+                Button {
+                    history.setUserCategory(category, of: items.map(\.id))
+                } label: {
+                    if chosen == [category] {
+                        Label(category.name, systemImage: "checkmark")
+                    } else {
+                        Label { Text(category.name) } icon: {
+                            Image(systemName: "circle.fill").foregroundStyle(Color(nsColor: category.color))
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -687,6 +730,7 @@ private struct ItemActions: View {
         Button("Rename\u{2026}") { renameEntry(item) }
         Button(item.pinned ? "Unpin" : "Pin") { history.setPinned(item.id, !item.pinned) }
         MoveToListMenu(item: item)
+        ClassificationMenu(items: [item])
         if item.kind == .files {
             Button("Copy File Contents") { copyContents(of: item.fileURLs, from: item, select: select) }
                 .disabled(item.filesGone)
@@ -857,6 +901,15 @@ private func copyContents(of urls: [URL], from item: ClipItem, select: (UUID) ->
 private struct HistoryRow: View {
     let item: ClipItem
     let listName: String?
+    @State private var keys = ModifierKeys.shared
+
+    /// 2026-11-11 10:22:03CET
+    static let exact: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ssz"
+        return f
+    }()
 
     var body: some View {
         HStack(spacing: 8) {
@@ -868,15 +921,35 @@ private struct HistoryRow: View {
                 }
             }
             .frame(width: 24, height: 24)
+            .help(categoryHelp)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title).lineLimit(1)
                     .foregroundStyle(item.filesGone ? .tertiary : .primary)
                     .strikethrough(item.filesGone)
                     .help(item.filesGone ? "These files no longer exist. Their names and paths can still be copied." : "")
-                Text([listName, item.sourceApp, item.date.formatted(.relative(presentation: .named))]
-                        .compactMap { $0 }.joined(separator: " · "))
+                if keys.option {
+                    HStack(spacing: 0) {
+                        if let listName { Text(listName + " · ") }
+                        if let app = item.sourceApp {
+                            if let bundleID = item.sourceBundleID, SourceApp.url(bundleID) != nil {
+                                Button(app) { SourceApp.show(bundleID) }
+                                    .buttonStyle(.link)
+                                    .help(SourceApp.help(bundleID))
+                            } else {
+                                Text(app)
+                            }
+                            Text(" · ")
+                        }
+                        Text(Self.exact.string(from: item.date)).textSelection(.enabled)
+                    }
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                } else {
+                    Text([listName, item.sourceApp, item.date.formatted(.relative(presentation: .named))]
+                            .compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer(minLength: 0)
             if item.edited != nil {
@@ -889,10 +962,43 @@ private struct HistoryRow: View {
     }
 }
 
+extension HistoryRow {
+    /// What the icon's colour says.
+    var categoryHelp: String {
+        let settings = SettingsStore.shared.value
+        guard let category = item.category(in: settings) else {
+            return settings.classifyEntries ? "Not classified yet" : ""
+        }
+        if item.userCategory == nil, category != item.effectiveCategory, let why = item.raisedBecause(settings) {
+            return "\(category.name): \(why)"
+                + (item.effectiveCategory.map { ", classified \($0.name)" } ?? ", not classified yet")
+        }
+        let by = item.userCategory != nil ? "set by you" : item.categoryByModel == true ? "classified with Apple Intelligence" : "classified by rules"
+        return "\(category.name) (\(by)): \(category.explanation)"
+    }
+}
+
+/// The entry's icon in the colour of its category: a symbol tinted, a
+/// picture or a file's icon with a dot of that colour on its corner.
 private struct ItemIcon: View {
     let item: ClipItem
 
     var body: some View {
+        let color = item.category(in: SettingsStore.shared.value).map { Color(nsColor: $0.color) }
+        let picture = !item.isPassword && (item.kind == .image || item.kind == .files)
+        symbolOrPicture
+            .foregroundStyle(color ?? .primary)
+            .overlay(alignment: .bottomTrailing) {
+                if picture, let color {
+                    Circle().fill(color)
+                        .overlay(Circle().stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
+                        .frame(width: 9, height: 9)
+                        .offset(x: 2, y: 2)
+                }
+            }
+    }
+
+    @ViewBuilder private var symbolOrPicture: some View {
         if item.isPassword {
             Image(systemName: "key")
         } else {
@@ -979,8 +1085,8 @@ private struct HistoryDetail: View {
             TextEditorView(documentID: item.id, text: item.string ?? "",
                            rich: item.kind == .richText ? item.attributedString : nil,
                            editable: editing, lineNumbers: lineNumbers, wrap: settings.value.wordWrap, controller: editor,
-                           onCopy: { [list = item.list, password = item.isPassword] in
-                               ClipboardHistory.shared.captureOwnCopy(list: list, password: password)
+                           onCopy: { [list = item.list, password = item.isPassword, id = item.id] in
+                               ClipboardHistory.shared.captureOwnCopy(list: list, password: password, from: id)
                            },
                            concealCopies: item.isPassword) { plain, rich in
                 history.updateText(item.id, plain: plain, rich: rich)
@@ -1149,6 +1255,8 @@ private struct HistoryDetail: View {
     }
 
     private func export() {
+        var thenDelete = false
+        guard PasteConfirmation.allowsExport(of: item, thenDelete: &thenDelete) else { return }
         let panel = NSSavePanel()
         let rich = item.kind == .richText
         panel.allowedContentTypes = rich ? [.plainText, .rtf] : [.plainText]
@@ -1163,8 +1271,62 @@ private struct HistoryDetail: View {
             } else {
                 try Data((item.string ?? "").utf8).write(to: url, options: .atomic)
             }
+            if thenDelete { PasteConfirmation.forget(item) }
         } catch {
             presentError(error, title: "The text could not be exported")
         }
+    }
+}
+
+
+/// Whether ⌥ is held while a Snippad window is in front: the Organizer then
+/// shows the exact time of each entry, and its application as a link.
+@MainActor @Observable
+final class ModifierKeys {
+    static let shared = ModifierKeys()
+    private(set) var option = false
+    @ObservationIgnored private var monitor: Any?
+
+    private init() {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
+            let down = event.modifierFlags.contains(.option)
+            if self?.option != down { self?.option = down }
+            return event
+        }
+        NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.option = false }
+        }
+    }
+}
+
+/// The application an entry was copied from: brought to the front when it
+/// runs with a window on screen, otherwise shown in its folder in Finder.
+@MainActor
+enum SourceApp {
+    static func url(_ bundleID: String) -> URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+    }
+
+    static func runningWithWindow(_ bundleID: String) -> NSRunningApplication? {
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+        guard !running.isEmpty,
+              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+        else { return nil }
+        let pids = Set(windows.filter { ($0[kCGWindowLayer as String] as? Int) == 0 }
+            .compactMap { $0[kCGWindowOwnerPID as String] as? pid_t })
+        return running.first { pids.contains($0.processIdentifier) }
+    }
+
+    static func show(_ bundleID: String) {
+        if let app = runningWithWindow(bundleID) {
+            app.activate()
+        } else if let url = url(bundleID) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    static func help(_ bundleID: String) -> String {
+        if runningWithWindow(bundleID) != nil { return "Switch to the application" }
+        return "Show the application in Finder" + (url(bundleID).map { ": \($0.deletingLastPathComponent().path)" } ?? "")
     }
 }

@@ -20,9 +20,25 @@ Requires macOS 15 or later.
 - Keep the history by number of entries, by age (a day to a year), or both; *Settings* and the menu bar menu show how much it takes on disk.
 - Optional sounds when Snippad puts something on the clipboard and when it pastes for you.
 - **Extract Text** reads the text and QR codes in an image on your Mac, with Apple's Vision framework, into a new text entry.
+- **Paste as Text** for images: the text of every copied image is read in the background, on your Mac, in its preferred languages, and pastes as plain text.
+- The menu opens at once, however long the history: an entry's submenu is made after the menu is on screen, and formatted text is no longer read through WebKit just to build it. The entries stand on a band of the accent colour, apart from the commands.
+- Lists other than the first are submenus under a **Lists** header. The menu shows 25 entries of each list (10 to 50 in *Settings*); a longer list ends in **Show All *n* Entries…**, which opens the picker on that list, to scroll through or search all of it.
 - Copied files that have since been deleted or moved are greyed out; their names and paths can still be copied.
 - Search covers text, file paths, source applications, and the EXIF, TIFF, GPS and IPTC metadata of copied images.
 - Applications can be excluded from recording, and nothing marked concealed or transient (as password managers do) is recorded.
+
+## Public, Sensitive, Private, Secret
+
+- Every entry is classified in the background: rules for keys, tokens, account and card numbers (check digits checked), addresses and phone numbers, then Apple Intelligence on your Mac for the rest -- personal data, rude or sexual content.
+- The Organizer colours each entry's icon by category: green, orange, purple, red. **Right-click › Classification** sets it yourself.
+- Pasting a Sensitive, Private or Secret entry asks first -- **Paste**, **Don't Paste**, **Don't Paste, and Delete It**, **Paste, and Delete It** -- with ⌘V in any app and from Snippad's menus. Which categories ask is a setting.
+- What is copied from an entry -- a part, its text, its objects, entries joined -- inherits its category.
+- Snippets have a classification too, in the snippet editor and the file (`classification`); a snippet added from the history takes its entry's, and its copies take the snippet's.
+- Exporting an entry, or a list holding such entries, asks first: export, don't, or export without them.
+- **Only Public entries are written to disk.** Sensitive, Private and Secret entries live in memory only and are gone when Snippad quits; an entry that becomes one loses its file at once.
+- What is copied in a private browser window, or from an application set to **Never Public** (a chat app, IRC), is never Public: a Public result counts as Private.
+- **Paste Without Asking**, per application, for the categories you choose -- each on its own.
+- Text reading, classifying and asking are each a switch in *Settings > General*, all on by default.
 
 ## Copies from iPhone, iPad and other Macs
 
@@ -48,6 +64,9 @@ Requires macOS 15 or later.
 - Several selected entries are copied as one with Return or **Copy Together**.
 - **Formatted text is edited with its formatting**: headings, fonts, sizes, bold, italic, underline, strikethrough, colours, highlight, alignment, lists and links, with ⌘B, ⌘I and ⌘U, and Writing Tools. **Make Rich Text** turns plain text into formatted text; rich text snippets are edited the same way.
 - Right-click the toolbar to choose Icon and Text, Icon Only or Text Only.
+- Double-click a `.snippad` file in the sidebar to open its window of buttons.
+- Hold **⌥** to see when each entry was copied to the second (`2026-11-11 10:22:03CET`) instead of "3 days ago"; its application becomes a link that switches to it when it has a window open, or shows it in Finder.
+- Entries dragged into other apps arrive as what they are: an image as a PNG file in Finder or Diptych, text as text.
 
 ## Editing images
 
@@ -131,7 +150,7 @@ The original, the objects and the crop are saved with the history entry, in list
 
 Snippad asks for a permission only when a feature that needs it is used, and works without it otherwise.
 
-- **Accessibility**: the Paste Guard, paste-once and chained snippets, and pasting for you (from the history, the picker or a snippet's shortcut).
+- **Accessibility**: the Paste Guard, paste-once and chained snippets, and pasting for you (from the history, the picker or a snippet's shortcut). While a feature needs it and it is not allowed, the menu bar menu has a line in harsh yellow that leads to System Settings.
 - **Screen Recording**: **Take Screenshot**; macOS asks the first time.
 - **Automation**: asked once per Chromium browser, the first time the Paste Guard needs to know whether its window is private.
 

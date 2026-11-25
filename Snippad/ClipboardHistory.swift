@@ -41,6 +41,31 @@ struct ClipItem: Identifiable, Codable, Equatable, Sendable {
     var edits: ImageEdits?
     /// The name the user gave the entry, shown instead of its first line.
     var name: String?
+    /// The text read from an image entry in the background, "" when it has
+    /// none, and the digest of the picture it was read from: an edited
+    /// picture is read again.
+    var readText: String?
+    var readTextFrom: String?
+    /// The languages it was read in; nil or empty: guessed.
+    var readTextLanguages: [String]?
+    /// Its HTML, converted in the background to RTF, and the digest of the
+    /// content it was converted from. Not part of `items`: what is pasted
+    /// as Original stays what was copied.
+    var converted: Data?
+    var convertedFrom: String?
+    /// Its category as classified in the background, what it was made of
+    /// (`classificationKey`), and whether Apple Intelligence had a say.
+    var category: ClipCategory?
+    var categoryFrom: String?
+    var categoryByModel: Bool?
+    var categoryVersion: Int?
+    /// The category the user chose; it stands over the classified one.
+    var userCategory: ClipCategory?
+    /// Copied in a private browser window: never Public.
+    var inPrivateWindow: Bool?
+    /// The category of the entry it was copied from (a part, its text, its
+    /// objects): it is at least that, whatever classifying finds.
+    var inheritedCategory: ClipCategory?
 
     init(items: [[String: Data]], sourceApp: String? = nil, date: Date = Date()) {
         self.items = items
@@ -78,10 +103,40 @@ struct ClipItem: Identifiable, Codable, Equatable, Sendable {
         data(.string).flatMap { String(data: $0, encoding: .utf8) }
     }
 
+    /// The formatted text. HTML is read through WebKit, which can keep the
+    /// caller waiting -- once for good, and Snippad with it -- so it is read
+    /// in the background (`convertFormattedTexts`) and kept as RTF. On the
+    /// main thread an entry not converted yet has none: it shows as plain
+    /// text until the conversion is done.
     var attributedString: NSAttributedString? {
+        if let formatted = attributedStringWithoutWebKit { return formatted }
+        guard let html = data(.html), !Thread.isMainThread else { return nil }
+        return Self.read(html: html)
+    }
+
+    /// HTML as formatted text, through WebKit: never on the main thread.
+    nonisolated static func read(html: Data) -> NSAttributedString? {
+        try? NSAttributedString(data: html, options: [.documentType: NSAttributedString.DocumentType.html,
+                                                      .characterEncoding: String.Encoding.utf8.rawValue],
+                                documentAttributes: nil)
+    }
+
+    /// HTML copied without RTF, and not converted (for this content) yet.
+    var needsHTMLConversion: Bool {
+        pending != true && data(.html) != nil && data(.rtf) == nil && data(.rtfd) == nil && convertedFrom != digest
+    }
+
+    /// Whether it was copied with formatting, told by what was stored alone:
+    /// reading HTML hands it to a WebKit process and waits for the answer,
+    /// which can take seconds -- the menu once took 20 to open.
+    var hasFormatting: Bool { data(.rtf) != nil || data(.rtfd) != nil || data(.html) != nil }
+
+    /// The formatted text where reading it needs no WebKit (RTF, RTFD); for
+    /// HTML, nil -- for what must not wait, such as building a menu.
+    var attributedStringWithoutWebKit: NSAttributedString? {
         if let rtf = data(.rtf) { return NSAttributedString(rtf: rtf, documentAttributes: nil) }
         if let rtfd = data(.rtfd) { return NSAttributedString(rtfd: rtfd, documentAttributes: nil) }
-        if let html = data(.html) { return NSAttributedString(html: html, documentAttributes: nil) }
+        if let converted, convertedFrom == digest { return NSAttributedString(rtf: converted, documentAttributes: nil) }
         return nil
     }
 
@@ -136,6 +191,9 @@ struct ClipItem: Identifiable, Codable, Equatable, Sendable {
         switch form {
         case .original:
             return nil
+        case .textOfImage:
+            guard let text = textOfImage else { return nil }
+            out[T.string.rawValue] = Data(text.utf8)
         case .markdown:
             guard let rich = attributedString else { return nil }
             out[T.string.rawValue] = Data(MarkdownConverter.markdown(from: rich).utf8)
@@ -164,6 +222,19 @@ struct ClipItem: Identifiable, Codable, Equatable, Sendable {
             }
         }
         return out.isEmpty ? nil : out
+    }
+
+    /// The text read from the picture as it is now, when there is some.
+    var textOfImage: String? {
+        guard readTextFrom == digest, let readText, !readText.isEmpty else { return nil }
+        return readText
+    }
+
+    /// An image whose text has not been read yet, or was read before an
+    /// edit, or in other languages than `languages` (nil: guessed).
+    func needsTextReading(in languages: [String]?) -> Bool {
+        kind == .image && !isPassword && pending != true
+            && (readTextFrom != digest || (readTextLanguages ?? []) != (languages ?? []))
     }
 
     /// Text, rich text, an image or files: what Add to Snippad takes.
@@ -329,6 +400,31 @@ final class ClipboardHistory {
     static let maxItemBytes = 50 * 1024 * 1024
 
     @ObservationIgnored private let directory: URL
+    /// Reads the text of image entries, one after the other, in the background.
+    @ObservationIgnored var textReader: Task<Void, Never>?
+    /// While an entry is being made from others: their category, which it
+    /// inherits (see `inheriting(from:_:)`).
+    @ObservationIgnored private var inheritedForNext: ClipCategory?
+
+    /// Runs `make`, and every entry it records inherits the category of the
+    /// entries it is made from -- not Public, which says nothing: what is
+    /// made is classified on its own anyway.
+    @discardableResult
+    func inheriting<T>(from sources: [UUID], also extra: ClipCategory? = nil, _ make: () throws -> T) rethrows -> T {
+        let before = inheritedForNext
+        let found = (sources.compactMap { item($0)?.category(in: settings.value) } + [extra].compactMap { $0 })
+            .filter { $0 != .general }
+        inheritedForNext = found.reduce(before) { ClipCategory.careful($0, $1) }
+        defer { inheritedForNext = before }
+        return try make()
+    }
+
+    /// Entries not written because they wait for their category.
+    @ObservationIgnored private var heldBack: Set<UUID> = []
+    /// Converts copied HTML to formatted text, in the background.
+    @ObservationIgnored var htmlConverter: Task<Void, Never>?
+    /// Classifies the entries, one after the other, in the background.
+    @ObservationIgnored var classifier: Task<Void, Never>?
     @ObservationIgnored private let pasteboard: NSPasteboard
     @ObservationIgnored private var lastChangeCount: Int
     @ObservationIgnored private var timer: Timer?
@@ -345,6 +441,12 @@ final class ClipboardHistory {
         self.engine = engine ?? .shared
         lastChangeCount = pasteboard.changeCount
         load()
+        // Images from before, or copied while Snippad was not running.
+        readImageTexts()
+        convertFormattedTexts()
+        classifyEntries()
+        // Files of what is Sensitive, Private or Secret, from before.
+        reconcileFiles()
     }
 
     /// At launch: record what Snippad puts on the clipboard, and catch up
@@ -394,11 +496,11 @@ final class ClipboardHistory {
     /// entry's or a snippet's text -- goes to the list of what it was copied
     /// from, so copying a part is no way around that list's Paste Guard
     /// rules. A part of a password stays a password.
-    func captureOwnCopy(list: String?, password: Bool = false) {
+    func captureOwnCopy(list: String?, password: Bool = false, from source: UUID? = nil, category: ClipCategory? = nil) {
         lastChangeCount = pasteboard.changeCount
         engine.clipboardChangedElsewhere()
         let listID = settings.listID(named: list) ?? ClipList.defaultID
-        capture(own: (listID, password))
+        inheriting(from: source.map { [$0] } ?? [], also: category) { capture(own: (listID, password)) }
         if let id = currentItemID, item(id)?.list != listID { move(id, toList: listID) }
         onCurrentChange?()
     }
@@ -419,8 +521,13 @@ final class ClipboardHistory {
         apps?.noteCopy(from: front)
 
         var listID = own?.list ?? settings.listID(for: bundleID)
-        if own == nil, let privateList = settings.value.privateBrowsingList, let front,
-           BrowserPrivacy.isBrowser(bundleID), BrowserPrivacy.state(of: front) == .privateWindow {
+        // A private window: for its list, and as never Public.
+        var inPrivateWindow = false
+        if own == nil, let front, BrowserPrivacy.isBrowser(bundleID),
+           settings.value.privateBrowsingList != nil || settings.value.classifyEntries {
+            inPrivateWindow = BrowserPrivacy.state(of: front) == .privateWindow
+        }
+        if inPrivateWindow, let privateList = settings.value.privateBrowsingList {
             listID = privateList
         }
         if remote {
@@ -452,6 +559,7 @@ final class ClipboardHistory {
                                                      : own == nil ? front?.localizedName : "Snippad")
         item.sourceBundleID = bundleID
         item.listID = listID == ClipList.defaultID ? nil : listID
+        if inPrivateWindow { item.inPrivateWindow = true }
         if own?.password == true { item.password = true }
         item.scanMetadata()
         record(item)
@@ -518,7 +626,7 @@ final class ClipboardHistory {
     /// Adds an entry at the top. Copying something already in the history
     /// moves that entry up instead of adding a second one; it keeps its list.
     func record(_ item: ClipItem) {
-        let recorded: ClipItem
+        var recorded: ClipItem
         if let index = items.firstIndex(where: { $0.digest == item.digest }) {
             var existing = items.remove(at: index)
             existing.date = item.date
@@ -528,12 +636,19 @@ final class ClipboardHistory {
             existing.name = item.name ?? existing.name
             if item.isPassword { existing.password = true }
             if existing.metadata == nil { existing.metadata = item.metadata }
+            existing.inheritedCategory = ClipCategory.careful(existing.inheritedCategory, item.inheritedCategory)
             recorded = existing
         } else {
             recorded = item
         }
+        if let inherited = inheritedForNext {
+            recorded.inheritedCategory = ClipCategory.careful(recorded.inheritedCategory, inherited)
+        }
         items.insert(recorded, at: 0)
         save(recorded)
+        if recorded.kind == .image { readImageTexts() }
+        convertFormattedTexts()
+        classifyEntries()
         currentItemID = recorded.id
         currentListID = recorded.list
         trim()
@@ -582,6 +697,7 @@ final class ClipboardHistory {
             lastChangeCount = pasteboard.changeCount
         }
         items.removeAll { $0.id == id }
+        heldBack.remove(id)
         pendingSaves.removeValue(forKey: id)?.cancel()
         if currentItemID == id { currentItemID = nil; onCurrentChange?() }
         try? FileManager.default.removeItem(at: file(for: id))
@@ -710,7 +826,9 @@ final class ClipboardHistory {
             types[NSPasteboard.PasteboardType.rtf.rawValue] = rtf
         }
         let count = ids.count
-        engine.put(types: types, name: "\(count) entries joined", rules: PasteRules(password: j.password, list: j.list))
+        inheriting(from: ids) {
+            engine.put(types: types, name: "\(count) entries joined", rules: PasteRules(password: j.password, list: j.list))
+        }
         let digest = ClipItem.digest(of: [types])
         return items.first { $0.digest == digest }
     }
@@ -743,6 +861,7 @@ final class ClipboardHistory {
         item.edited = Date()
         items[index] = item
         saveSoon(item)
+        classifyEntries()
 
         if currentItemID == id && pasteboard.changeCount == lastChangeCount {
             engine.put(items: item.pasteboardItems, name: item.title, concealed: item.isPassword)
@@ -762,6 +881,7 @@ final class ClipboardHistory {
         item.edited = Date()
         items[index] = item
         saveSoon(item)
+        readImageTexts()
 
         if currentItemID == id && pasteboard.changeCount == lastChangeCount {
             engine.put(items: item.pasteboardItems, name: item.title, concealed: item.isPassword)
@@ -831,6 +951,9 @@ final class ClipboardHistory {
         item.digest = digest
         item.pending = nil
         item.label = name
+        if let inherited = inheritedForNext {
+            item.inheritedCategory = ClipCategory.careful(item.inheritedCategory, inherited)
+        }
         items[index] = item
         save(item)
         return putText(text, name: name, list: list)
@@ -871,7 +994,9 @@ final class ClipboardHistory {
         guard let item = item(id), let text = fileText(of: id, what) else {
             throw ClipboardError("That entry is not a list of files.")
         }
-        putText(text, name: (what == .paths ? "Paths of " : "Names of ") + item.title, list: item.list)
+        inheriting(from: [id]) {
+            putText(text, name: (what == .paths ? "Paths of " : "Names of ") + item.title, list: item.list)
+        }
         return text
     }
 
@@ -904,11 +1029,13 @@ final class ClipboardHistory {
         case richText
         /// Rich text written as Markdown, as plain text.
         case markdown
+        /// The text read from an image, as plain text.
+        case textOfImage
     }
 
     /// Whether the entry has rich text to paste as such.
     func hasRichText(_ id: UUID) -> Bool {
-        item(id)?.attributedString != nil
+        item(id)?.hasFormatting ?? false
     }
 
     /// Puts an entry on the clipboard in one form. It moves to the top of
@@ -1103,8 +1230,101 @@ final class ClipboardHistory {
         pendingSaves = [:]
     }
 
+    /// The text read from an entry's picture, unless the picture changed
+    /// meanwhile: then it is read again. An entry deleted meanwhile is gone.
+    /// Converts the HTML of every entry copied as HTML only, newest first,
+    /// one at a time on a background thread. When WebKit does not answer,
+    /// only this waits -- never a window or the menu.
+    func convertFormattedTexts() {
+        guard htmlConverter == nil else { return }
+        htmlConverter = Task { [weak self] in
+            while let self, let next = self.items.first(where: \.needsHTMLConversion) {
+                let id = next.id, digest = next.digest, html = next.items.lazy.compactMap { $0[NSPasteboard.PasteboardType.html.rawValue] }.first
+                let rtf = await Task.detached(priority: .utility) { () -> Data? in
+                    guard let html, let text = ClipItem.read(html: html) else { return nil }
+                    return text.rtf(from: NSRange(location: 0, length: text.length), documentAttributes: [:])
+                }.value
+                guard let index = self.items.firstIndex(where: { $0.id == id }), self.items[index].digest == digest else { continue }
+                self.items[index].converted = rtf
+                self.items[index].convertedFrom = digest
+                self.save(self.items[index])
+            }
+            self?.htmlConverter = nil
+        }
+    }
+
+    /// The category classified, unless the entry changed meanwhile: then
+    /// it is classified again.
+    func setCategory(_ category: ClipCategory, byModel: Bool, of id: UUID, key: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }), items[index].classificationKey == key else { return }
+        items[index].category = category
+        items[index].categoryFrom = key
+        items[index].categoryByModel = byModel
+        items[index].categoryVersion = ClipClassifier.version
+        save(items[index])
+        if id == currentItemID { onCurrentChange?() }  // pasting it may now ask
+    }
+
+    /// The user's own category for entries; nil goes back to the classified one.
+    func setUserCategory(_ category: ClipCategory?, of ids: [UUID]) {
+        for id in ids { update(id) { $0.userCategory = category } }
+        if let current = currentItemID, ids.contains(current) { onCurrentChange?() }
+    }
+
+    func setReadText(_ text: String, of id: UUID, from digest: String, in languages: [String]?) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        guard items[index].digest == digest else { return }
+        items[index].readText = text
+        items[index].readTextFrom = digest
+        items[index].readTextLanguages = languages ?? []
+        save(items[index])
+        classifyEntries()  // what it says decides its category
+    }
+
+    /// Whether an entry goes to disk: never when it is Sensitive, Private
+    /// or Secret -- then its file goes, and it lives only until Snippad
+    /// quits. While classifying is on, a new entry waits for its category
+    /// before it is written; one already on disk is left alone meanwhile.
+    enum Keeping { case write, delete, wait }
+
+    func keeping(_ item: ClipItem) -> Keeping {
+        if let category = item.category(in: settings.value) {
+            return category == .general ? .write : .delete
+        }
+        let classifiable = item.isPassword || [.text, .url, .richText, .image].contains(item.kind)
+        return settings.value.classifyEntries && classifiable ? .wait : .write
+    }
+
+    /// Writes what may be written and was held back, and deletes the files
+    /// of what may not be on disk: after classifying, a choice of the user,
+    /// or a change of Settings (Never Public, classifying switched off).
+    func reconcileFiles() {
+        for item in items where item.pending != true {
+            switch keeping(item) {
+            case .delete:
+                try? FileManager.default.removeItem(at: file(for: item.id))
+                heldBack.remove(item.id)
+            case .write where heldBack.contains(item.id) || !FileManager.default.fileExists(atPath: file(for: item.id).path):
+                save(item)
+            default:
+                break
+            }
+        }
+    }
+
     private func save(_ item: ClipItem) {
         guard item.pending != true else { return }
+        switch keeping(item) {
+        case .delete:
+            heldBack.remove(item.id)
+            try? FileManager.default.removeItem(at: file(for: item.id))
+            return
+        case .wait:
+            heldBack.insert(item.id)
+            return
+        case .write:
+            heldBack.remove(item.id)
+        }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])

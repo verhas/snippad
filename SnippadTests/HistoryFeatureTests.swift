@@ -17,6 +17,9 @@ final class HistoryFeatureTests: XCTestCase {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("HistoryFeatures-\(UUID().uuidString)")
         pasteboard = NSPasteboard(name: .init("SnippadFeatureTests-\(UUID().uuidString)"))
         settings = SettingsStore(url: nil)
+        // These tests are about the history and its files; classifying, which
+        // holds new entries back from disk until it is done, has tests of its own.
+        settings.value.classifyEntries = false
         engine = PasteEngine()
         engine.pasteboard = pasteboard
         history = ClipboardHistory(directory: directory, pasteboard: pasteboard, settings: settings, engine: engine)

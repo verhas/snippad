@@ -166,6 +166,9 @@ enum PasteInterceptor {
         if PasteEngine.shared.awaitsPaste {
             reasons.append(PasteEngine.shared.current?.rules.next != nil ? "a chained value" : "a paste-once value")
         }
+        if let (_, category) = PasteConfirmation.needed(ClipboardHistory.shared, SettingsStore.shared.value) {
+            reasons.append("asking before a \(category.name.lowercased()) entry is pasted")
+        }
         return reasons
     }
 
@@ -289,6 +292,18 @@ enum PasteInterceptor {
         history.poll()  // a copy made a moment ago is not polled yet
         let settings = SettingsStore.shared.value
         let target = NSWorkspace.shared.frontmostApplication
+        // Sensitive, Private or Secret (as Settings say): hold the ⌘V and
+        // ask; a yes sends it again, past this question but not the guard.
+        let preconfirmed = PasteConfirmation.confirmed
+        PasteConfirmation.confirmed = nil
+        if let target, target.bundleIdentifier != Bundle.main.bundleIdentifier,
+           let (item, category) = PasteConfirmation.needed(history, settings, into: target.bundleIdentifier),
+           preconfirmed != item.id {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { PasteConfirmation.ask(about: item, category, into: target) }
+            }
+            return false
+        }
         guard settings.pasteGuardEnabled, let target, target.bundleIdentifier != Bundle.main.bundleIdentifier else {
             PasteEngine.shared.noticePaste()
             return true

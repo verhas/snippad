@@ -180,7 +180,12 @@ enum ListExport {
     static func export(listID: String?, as format: Format) {
         let settings = SettingsStore.shared
         let name = listID.map { settings.list($0).name } ?? "All Lists"
-        let items = ClipboardHistory.shared.items.filter { listID == nil || $0.list == listID }
+        var items = ClipboardHistory.shared.items.filter { listID == nil || $0.list == listID }
+        switch PasteConfirmation.listExport(items, name: name) {
+        case .none: return
+        case .withoutThem: items.removeAll { PasteConfirmation.asksOnExport($0) != nil }
+        case .all: break
+        }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [format.contentType]
         panel.nameFieldStringValue = "\(name).\(format.fileExtension)"

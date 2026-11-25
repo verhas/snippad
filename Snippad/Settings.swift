@@ -92,6 +92,9 @@ struct SnippadSettings: Codable, Equatable, Sendable {
     var recordHistory = true
     /// Unpinned entries kept per list.
     var historyLimit = 200
+    /// Entries of a list the menu bar menu shows; the rest are behind
+    /// "Show All … Entries…".
+    var menuEntryCount = 25
     var hotKeyEnabled = true
     var pasteAfterChoosing = false
     /// Bundle identifiers whose copies are not recorded.
@@ -166,6 +169,26 @@ struct SnippadSettings: Codable, Equatable, Sendable {
     var pasteSound = ""
     /// The copy sound also for what is copied in other apps.
     var copySoundForOtherApps = false
+    /// Text in images is read in the Mac's preferred languages only; off,
+    /// Vision guesses the language, and on screenshots of English it at
+    /// times guesses Chinese.
+    var readTextInPreferredLanguages = true
+    /// The text of every image copied is read in the background, for Paste
+    /// as Text, and for classifying the image.
+    var readTextOfImages = true
+    /// Entries are classified Public, Sensitive, Private or Secret in the
+    /// background, by rules and Apple Intelligence on this Mac.
+    var classifyEntries = true
+    /// The categories (`ClipCategory` raw values) pasting asks about first.
+    var askBeforePasting: [String] = [ClipCategory.sensitive, .offensive, .secret].map(\.rawValue)
+    /// Bundle identifiers whose copies are never Public: classified as
+    /// anything else, but Public counts as Private -- as for copies made in
+    /// a private browser window.
+    var neverPublicApps: [String] = []
+    /// Bundle identifier -> the categories (raw values) pasted into that
+    /// application without asking. Each category on its own: Private there
+    /// does not let Secret through.
+    var pasteWithoutAsking: [String: [String]] = [:]
 
     init() {}
 
@@ -174,6 +197,7 @@ struct SnippadSettings: Codable, Equatable, Sendable {
         let d = SnippadSettings()
         recordHistory = try c.decodeIfPresent(Bool.self, forKey: .recordHistory) ?? d.recordHistory
         historyLimit = try c.decodeIfPresent(Int.self, forKey: .historyLimit) ?? d.historyLimit
+        menuEntryCount = try c.decodeIfPresent(Int.self, forKey: .menuEntryCount) ?? d.menuEntryCount
         hotKeyEnabled = try c.decodeIfPresent(Bool.self, forKey: .hotKeyEnabled) ?? d.hotKeyEnabled
         pasteAfterChoosing = try c.decodeIfPresent(Bool.self, forKey: .pasteAfterChoosing) ?? d.pasteAfterChoosing
         excludedApps = try c.decodeIfPresent([String].self, forKey: .excludedApps) ?? d.excludedApps
@@ -207,6 +231,12 @@ struct SnippadSettings: Codable, Equatable, Sendable {
         copySound = try c.decodeIfPresent(String.self, forKey: .copySound) ?? d.copySound
         pasteSound = try c.decodeIfPresent(String.self, forKey: .pasteSound) ?? d.pasteSound
         copySoundForOtherApps = try c.decodeIfPresent(Bool.self, forKey: .copySoundForOtherApps) ?? d.copySoundForOtherApps
+        readTextInPreferredLanguages = try c.decodeIfPresent(Bool.self, forKey: .readTextInPreferredLanguages) ?? d.readTextInPreferredLanguages
+        readTextOfImages = try c.decodeIfPresent(Bool.self, forKey: .readTextOfImages) ?? d.readTextOfImages
+        classifyEntries = try c.decodeIfPresent(Bool.self, forKey: .classifyEntries) ?? d.classifyEntries
+        askBeforePasting = try c.decodeIfPresent([String].self, forKey: .askBeforePasting) ?? d.askBeforePasting
+        neverPublicApps = try c.decodeIfPresent([String].self, forKey: .neverPublicApps) ?? d.neverPublicApps
+        pasteWithoutAsking = try c.decodeIfPresent([String: [String]].self, forKey: .pasteWithoutAsking) ?? d.pasteWithoutAsking
         normalize()
     }
 
@@ -227,6 +257,7 @@ struct SnippadSettings: Codable, Equatable, Sendable {
         if let l = imageObjectsList, !ids.contains(l) { imageObjectsList = nil }
         if ![10, 20, 30, 60].contains(screenshotDelay) { screenshotDelay = 10 }
         historyLimit = max(1, historyLimit)
+        menuEntryCount = min(max(1, menuEntryCount), 200)
         historyMaxAgeDays = max(0, historyMaxAgeDays)
         let d = SnippadSettings.defaultHotKeys
         if KeyShortcut(historyHotKey)?.isUsable != true { historyHotKey = d.history }
@@ -315,10 +346,12 @@ final class SettingsStore {
     }
 
     /// Whether any setting names this application: excluded, given a list,
-    /// or in a list's Paste Guard rules.
+    /// in a list's Paste Guard rules, never Public, or pasted into without
+    /// asking.
     func mentions(_ bundleID: String) -> Bool {
         value.excludedApps.contains(bundleID) || value.appLists[bundleID] != nil
             || value.lists.contains { $0.guardApps.contains(bundleID) }
+            || value.neverPublicApps.contains(bundleID) || !(value.pasteWithoutAsking[bundleID] ?? []).isEmpty
     }
 
     /// Removes every setting that names this application.
@@ -326,6 +359,8 @@ final class SettingsStore {
         var v = value
         v.excludedApps.removeAll { $0 == bundleID }
         v.appLists[bundleID] = nil
+        v.neverPublicApps.removeAll { $0 == bundleID }
+        v.pasteWithoutAsking[bundleID] = nil
         for i in v.lists.indices { v.lists[i].guardApps.removeAll { $0 == bundleID } }
         value = v
     }

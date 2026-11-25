@@ -66,6 +66,21 @@ private struct GeneralTab: View {
     /// An age limit that would delete entries, waiting to be confirmed.
     @State private var pendingAge: (days: Int, count: Int)?
 
+    /// What classifying does, and whether Apple Intelligence takes part.
+    static func classificationNote(_ on: Bool) -> String {
+        guard on else { return "Off: entries are not classified. Categories you set yourself still count." }
+        let rules = "Rules find keys, tokens and passwords (Secret), and account and card numbers, addresses and phone numbers (Sensitive)."
+        return ClipClassifier.modelAvailable
+            ? rules + " Apple Intelligence, on this Mac and without the network, reads each entry, and the text of images, for the rest."
+            : rules + " Apple Intelligence is not available on this Mac (or not switched on), so only the rules classify; Private needs it."
+    }
+
+    /// The languages text is read in, by name: "English, Hungarian".
+    static var readingLanguages: String {
+        let names = TextRecognition.preferredLanguages().map { Locale.current.localizedString(forIdentifier: $0) ?? $0 }
+        return names.isEmpty ? "none of the Mac\u{2019}s languages is known to text recognition, so it guesses" : names.joined(separator: ", ")
+    }
+
     static let ages: [(days: Int, title: String)] = [
         (0, "Never"), (1, "1 day"), (7, "1 week"), (14, "2 weeks"), (30, "1 month"), (60, "2 months"),
         (90, "3 months"), (180, "6 months"), (365, "1 year"),
@@ -120,6 +135,13 @@ private struct GeneralTab: View {
                 }
                 Text("Both limits apply to each list. Pinned entries are kept, however many and however old. Deleted entries can be brought back for five minutes with Undo Delete.")
                     .font(.callout).foregroundStyle(.secondary)
+                Picker("Show in the menu", selection: $store.value.menuEntryCount) {
+                    ForEach(Array(Set([10, 15, 20, 25, 30, 40, 50, store.value.menuEntryCount])).sorted(), id: \.self) {
+                        Text("\($0) entries per list").tag($0)
+                    }
+                }
+                Text("A list with more entries ends in the menu with Show All Entries…, which opens the picker window on that list.")
+                    .font(.callout).foregroundStyle(.secondary)
                 Toggle("Paste after choosing an entry from the menu or the picker window", isOn: $store.value.pasteAfterChoosing)
             }
             Section("Shortcuts") {
@@ -147,6 +169,36 @@ private struct GeneralTab: View {
                     ForEach(store.value.lists.dropFirst()) { Text($0.name).tag(Optional($0.id)) }
                 }
                 Text("Take Screenshot is in the menu bar menu. The picture goes on the clipboard and into this list. Snippad needs the Screen Recording permission for it; macOS asks the first time.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Text in images") {
+                Toggle("Read the text of every image copied, in the background", isOn: $store.value.readTextOfImages)
+                Toggle("Read text in the Mac\u{2019}s preferred languages only", isOn: $store.value.readTextInPreferredLanguages)
+                Text(store.value.readTextInPreferredLanguages
+                     ? "Read in: \(Self.readingLanguages). Snippad reads the text of every image copied, on this Mac, for Paste as Text and Extract Text. The languages are those of System Settings › General › Language & Region that text recognition knows."
+                     : "Off: the language of each image is guessed. A guess can go wrong on screenshots, and read English as Chinese.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Classification") {
+                Toggle("Classify entries: Public, Sensitive, Private or Secret", isOn: $store.value.classifyEntries)
+                Text(Self.classificationNote(store.value.classifyEntries))
+                    .font(.callout).foregroundStyle(.secondary)
+                ForEach(ClipCategory.allCases) { category in
+                    Toggle(isOn: Binding(
+                        get: { store.value.askBeforePasting.contains(category.rawValue) },
+                        set: { on in
+                            store.value.askBeforePasting.removeAll { $0 == category.rawValue }
+                            if on { store.value.askBeforePasting.append(category.rawValue) }
+                        })) {
+                        Label {
+                            Text("Ask before pasting or exporting \(category.name) entries")
+                            Text(category.explanation)
+                        } icon: {
+                            Image(systemName: "circle.fill").foregroundStyle(Color(nsColor: category.color))
+                        }
+                    }
+                }
+                Text("Asking needs the Accessibility permission to hold ⌘V in other apps; pasting from Snippad\u{2019}s menu asks without it. In the Organizer, right-click an entry › Classification to set its category yourself.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section("Image editor") {
@@ -323,6 +375,35 @@ private struct ApplicationsTab: View {
                     .labelsHidden()
                 }
                 .width(min: 120, ideal: 160)
+                TableColumn("Never Public") { app in
+                    Toggle("", isOn: Binding(
+                        get: { store.value.neverPublicApps.contains(app.bundleID) },
+                        set: { on in
+                            store.value.neverPublicApps.removeAll { $0 == app.bundleID }
+                            if on { store.value.neverPublicApps.append(app.bundleID) }
+                        }))
+                        .labelsHidden()
+                        .help("On: its copies are classified as anything else, but are never Public -- Public counts as Private, as for a private browser window")
+                }
+                .width(84)
+                TableColumn("Paste Without Asking") { app in
+                    let chosen = store.value.pasteWithoutAsking[app.bundleID] ?? []
+                    let names = ClipCategory.allCases.filter { chosen.contains($0.rawValue) }.map(\.name)
+                    Menu(names.isEmpty ? "Ask as set in General" : names.joined(separator: ", ")) {
+                        ForEach(ClipCategory.allCases) { category in
+                            Toggle(category.name, isOn: Binding(
+                                get: { chosen.contains(category.rawValue) },
+                                set: { on in
+                                    var now = (store.value.pasteWithoutAsking[app.bundleID] ?? []).filter { $0 != category.rawValue }
+                                    if on { now.append(category.rawValue) }
+                                    store.value.pasteWithoutAsking[app.bundleID] = now.isEmpty ? nil : now
+                                }))
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .help("The categories pasted into this application without asking. Each on its own: Private here does not let Secret through.")
+                }
+                .width(min: 120, ideal: 170)
             }
         }
     }
